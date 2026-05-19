@@ -81,6 +81,8 @@ export class Cycle implements Agent {
   private readonly recentInvocations: ActionInvocation[] = [];
   /** Operator-injected prompts queued by injectPrompt() — drained into the next cycle. */
   private readonly injectedPrompts: string[] = [];
+  /** Mutable knowledge bundles surfaced to every cycle's decide prompt. */
+  private knowledgeBundles: Array<{ name: string; content: string; description?: string }> = [];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
@@ -103,6 +105,13 @@ export class Cycle implements Agent {
     this.identity = createIdentity(config.identity, config.identity.dbPath, this.dialectic);
     this.lastIdentitySnapshot = this.identity.current();
     this.goals = createGoalsAdapter(config.goals, this.dialectic);
+    if (config.knowledgeBundles) {
+      this.knowledgeBundles = config.knowledgeBundles.map((b) => {
+        const out: { name: string; content: string; description?: string } = { name: b.name, content: b.content };
+        if (b.description !== undefined) out.description = b.description;
+        return out;
+      });
+    }
     this.trace = createTrace(config.trace);
     this.trace.start(this.engagementId);
     this.selfReview = createSelfReview(
@@ -141,6 +150,17 @@ export class Cycle implements Agent {
   /** Mid-flight prompt injection — operator nudge that prepends to the next cycle's prompt. */
   injectPrompt(text: string): void {
     if (text) this.injectedPrompts.push(text);
+  }
+  /** Replace the knowledge bundle set. Bridge calls this when bundles are attached/detached. */
+  setKnowledge(bundles: Array<{ name: string; content: string; description?: string }>): void {
+    this.knowledgeBundles = bundles.map((b) => {
+      const out: { name: string; content: string; description?: string } = { name: b.name, content: b.content };
+      if (b.description !== undefined) out.description = b.description;
+      return out;
+    });
+  }
+  knowledgeSummary(): Array<{ name: string; chars: number }> {
+    return this.knowledgeBundles.map((b) => ({ name: b.name, chars: b.content.length }));
   }
 
   async run(): Promise<EngagementResult> {
@@ -549,8 +569,14 @@ export class Cycle implements Agent {
     const idBlock = idSnap && idSnap.claims.length > 0
       ? `Identity (v${idSnap.version}):\n${idSnap.claims.map((c) => '  - ' + c).join('\n')}`
       : `Identity: ${this.config.identity.description}`;
+    // Knowledge bundles — authoritative reference material the operator attached.
+    // Place ABOVE goals/recall so the agent sees them as ground truth.
+    const knowledgeBlock = this.knowledgeBundles.length > 0
+      ? `Knowledge bundles (authoritative — consult before answering):\n${this.knowledgeBundles.map((b) => `═══ ${b.name}${b.description ? ` (${b.description})` : ''} ═══\n${b.content}`).join('\n\n')}`
+      : '';
     const parts = [
       idBlock,
+      knowledgeBlock,
       goal ? `Goals:\n${goal}` : 'Goals: (none configured)',
       `Recalled memory:\n${recallSummary}`,
       renderCapabilityCatalog(this.capabilities),

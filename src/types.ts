@@ -15,10 +15,21 @@ export interface LatticeConfig {
   engine: EngineRef;
   controls: ControlSurface;
   capabilities?: Capability[];
+  /** Knowledge bundles surfaced to the agent in every cycle's decide prompt.
+   *  Mutable at runtime via `Cycle.setKnowledge(bundles)` so the Bridge can
+   *  attach/detach bundles mid-engagement. */
+  knowledgeBundles?: KnowledgeBundleInput[];
   trace?: TraceConfig;
   trainingMode?: TrainingModeConfig;
   reviewCycle?: { everyNCycles: number };
   protocol?: LatticeProtocolConfig;
+}
+
+export interface KnowledgeBundleInput {
+  name: string;
+  content: string;
+  /** Optional one-line description shown before the content. */
+  description?: string;
 }
 
 /** A capability the agent can invoke during the act phase. */
