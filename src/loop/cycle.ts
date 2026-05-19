@@ -99,7 +99,7 @@ export class Cycle implements Agent {
     this.controlApplicator = createControlSurfaceApplicator(this.substrate, this.dialectic, this.trainingMode);
     this.protocol = createLatticeProtocol(config.protocol);
     if (config.protocol) {
-      // Register this lattice's memory so peers can bridgeMemory() to it.
+      // Register this lattice's memory so same-process peers can bridgeMemory() to it.
       registerPeerMemory(config.protocol.latticeId, this.memory);
       // Publish our trace stream to the registry so peers can subscribeToTrace().
       if (config.protocol.publish?.trace) {
@@ -108,8 +108,15 @@ export class Cycle implements Agent {
     }
   }
 
+  /** Public access to the underlying LatticeProtocol — Bridge + cross-process tests use this. */
+  protocolHandle(): LatticeProtocol {
+    return this.protocol;
+  }
+
   async run(): Promise<EngagementResult> {
     this.startedAt = Date.now();
+    // Initialize protocol: spin up MCP server (if publish.endpoint set) + connect to peers.
+    await this.protocol.initialize(this.memory, this.trace);
     this.emit('observe', 0, { event: 'engagement-started', config: { identity: this.config.identity.description } });
     if (this.trainingMode.isEnabled()) {
       const snap = this.trainingMode.snapshot();
@@ -492,6 +499,8 @@ export class Cycle implements Agent {
       tracePath: this.trace.path(),
     };
     this.trace.end(result);
+    // Best-effort protocol shutdown — don't let MCP server errors fail the engagement result.
+    void this.protocol.shutdown().catch(() => {});
     return result;
   }
 }

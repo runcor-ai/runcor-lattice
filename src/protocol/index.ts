@@ -19,6 +19,9 @@
 
 import type { Agent, LatticeProtocolConfig, ObservationStream, TraceEntry } from '../types.js';
 import type { Memory } from '../memory/index.js';
+import type { Trace } from '../trace/index.js';
+import { createLatticeMcpServer, type LatticeMcpServer } from './mcp-server.js';
+import { connectPeer, type PeerClient } from './mcp-client.js';
 
 // ─── Public adapter surface (matches spec §9 interface) ────────────────────
 
@@ -48,12 +51,20 @@ export interface LatticeProtocol {
   publishTrace(latticeId: string, stream: ObservationStream): void;
   /** Get the latest published trace for a peer (returns null if peer hasn't published). */
   subscribeToTrace(latticeId: string): ObservationStream | null;
-  /** Establish a read-only memory bridge to a peer. */
+  /** Establish a read-only memory bridge to a peer (in-process or via MCP URL). */
   bridgeMemory(latticeId: string, scope: MemoryScope): MemoryBridge | null;
-  /** Send a message to a peer's inbox. Returns true when delivered. */
+  /** Async variant — required for cross-process MCP bridges where the underlying call is HTTP. */
+  bridgeMemoryAsync(latticeId: string, scope: MemoryScope): Promise<MemoryBridge | null>;
+  /** Send a message to a peer's inbox. Returns true when delivered (sync — local registry path). */
   sendMessage(latticeId: string, message: Omit<LatticeMessage, 'from' | 'ts'> & { from: string }): boolean;
+  /** Async variant — required for cross-process MCP sends (HTTP round-trip). */
+  sendMessageAsync(latticeId: string, message: Omit<LatticeMessage, 'from' | 'ts'> & { from: string }): Promise<boolean>;
   /** Drain this lattice's inbox — typically called by the cycle in the observe phase. */
   drainInbox(): LatticeMessage[];
+  /** Start the MCP server (if config.publish.endpoint is set) + connect to remote peers. */
+  initialize(memory: Memory, trace: Trace): Promise<void>;
+  /** Stop the MCP server + close peer clients. */
+  shutdown(): Promise<void>;
 }
 
 // ─── In-process registry (placeholder for MCP) ────────────────────────────
@@ -90,8 +101,11 @@ export function __resetProtocolRegistry(): void {
 // ─── Implementation ────────────────────────────────────────────────────────
 
 class LatticeProtocolImpl implements LatticeProtocol {
-  constructor(private readonly latticeId: string) {
-    ensureEntry(latticeId);
+  private mcpServer: LatticeMcpServer | null = null;
+  private readonly peerClients = new Map<string, PeerClient>();
+
+  constructor(private readonly config: LatticeProtocolConfig) {
+    ensureEntry(config.latticeId);
   }
 
   publishTrace(latticeId: string, stream: ObservationStream): void {
@@ -106,14 +120,20 @@ class LatticeProtocolImpl implements LatticeProtocol {
   bridgeMemory(latticeId: string, scope: MemoryScope): MemoryBridge | null {
     const peerMemory = REGISTRY.get(latticeId)?.memory;
     if (!peerMemory || !peerMemory.isEnabled()) return null;
+    return this.makeInProcessBridge(peerMemory, scope);
+  }
+
+  async bridgeMemoryAsync(latticeId: string, scope: MemoryScope): Promise<MemoryBridge | null> {
+    // Try in-process first (fast path).
+    const local = this.bridgeMemory(latticeId, scope);
+    if (local) return local;
+    // Fall back to MCP client.
+    const peer = this.peerClients.get(latticeId);
+    if (!peer) return null;
     return {
       async search(query, k = 5) {
-        const results = await peerMemory.recall(query, k);
-        // Apply scope filter
-        const filtered = scope === 'all' || scope === 'tagged'
-          ? results
-          : results.filter((r) => r.cube === scope);
-        return filtered.map((r) => ({ content: r.content, M: r.M, cube: r.cube }));
+        const results = await peer.bridge.search(query, k);
+        return (scope === 'all' || scope === 'tagged') ? results : results.filter((r) => r.cube === scope);
       },
     };
   }
@@ -125,12 +145,65 @@ class LatticeProtocolImpl implements LatticeProtocol {
     return true;
   }
 
+  async sendMessageAsync(latticeId: string, message: Omit<LatticeMessage, 'from' | 'ts'> & { from: string }): Promise<boolean> {
+    // In-process first.
+    if (this.sendMessage(latticeId, message)) return true;
+    // MCP fallback.
+    const peer = this.peerClients.get(latticeId);
+    if (!peer) return false;
+    return peer.send({ from: message.from, text: message.text });
+  }
+
   drainInbox(): LatticeMessage[] {
-    const entry = REGISTRY.get(this.latticeId);
+    const entry = REGISTRY.get(this.config.latticeId);
     if (!entry) return [];
     const messages = [...entry.inbox];
     entry.inbox = [];
     return messages;
+  }
+
+  async initialize(memory: Memory, trace: Trace): Promise<void> {
+    // Start MCP server if publish.endpoint is configured.
+    if (this.config.publish?.endpoint !== undefined) {
+      this.mcpServer = createLatticeMcpServer({
+        latticeId: this.config.latticeId,
+        memory,
+        trace,
+        enqueueMessage: (msg) => {
+          const entry = ensureEntry(this.config.latticeId);
+          entry.inbox.push(msg);
+        },
+      });
+      await this.mcpServer.listen(this.config.publish.endpoint);
+    }
+    // Connect to subscribed peers over MCP.
+    for (const sub of this.config.subscriptions ?? []) {
+      if (sub.url) {
+        try {
+          const client = await connectPeer({ endpoint: { latticeId: sub.latticeId, url: sub.url } });
+          this.peerClients.set(sub.latticeId, client);
+        } catch {
+          // Connection failure is non-fatal — the in-process fallback may still work.
+        }
+      }
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    for (const client of this.peerClients.values()) await client.close().catch(() => {});
+    this.peerClients.clear();
+    if (this.mcpServer) await this.mcpServer.close().catch(() => {});
+    this.mcpServer = null;
+  }
+
+  private makeInProcessBridge(peerMemory: Memory, scope: MemoryScope): MemoryBridge {
+    return {
+      async search(query, k = 5) {
+        const results = await peerMemory.recall(query, k);
+        const filtered = scope === 'all' || scope === 'tagged' ? results : results.filter((r) => r.cube === scope);
+        return filtered.map((r) => ({ content: r.content, M: r.M, cube: r.cube }));
+      },
+    };
   }
 }
 
@@ -138,13 +211,17 @@ class DisabledProtocol implements LatticeProtocol {
   publishTrace(): void { /* no-op */ }
   subscribeToTrace(): ObservationStream | null { return null; }
   bridgeMemory(): MemoryBridge | null { return null; }
+  async bridgeMemoryAsync(): Promise<MemoryBridge | null> { return null; }
   sendMessage(): boolean { return false; }
+  async sendMessageAsync(): Promise<boolean> { return false; }
   drainInbox(): LatticeMessage[] { return []; }
+  async initialize(): Promise<void> { /* no-op */ }
+  async shutdown(): Promise<void> { /* no-op */ }
 }
 
 export function createLatticeProtocol(config: LatticeProtocolConfig | undefined): LatticeProtocol {
   if (!config) return new DisabledProtocol();
-  return new LatticeProtocolImpl(config.latticeId);
+  return new LatticeProtocolImpl(config);
 }
 
 // ─── MCP integration (DEFERRED) ────────────────────────────────────────────

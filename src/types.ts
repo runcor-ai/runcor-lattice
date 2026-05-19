@@ -210,8 +210,24 @@ export interface EngagementResult {
 export interface LatticeProtocolConfig {
   /** This lattice's published identity for peers to address. */
   latticeId: string;
-  /** MCP endpoints this lattice exposes (trace, memory-bridge, message channels). */
-  publish?: { trace?: boolean; memory?: boolean; messages?: boolean };
-  /** MCP endpoints this lattice subscribes to from other lattices. */
-  subscriptions?: Array<{ latticeId: string; resource: 'trace' | 'memory' | 'messages' }>;
+  /** MCP endpoints this lattice exposes (trace, memory-bridge, message channels).
+   *  When `endpoint` is set, the lattice spins up an HTTP MCP server on that port. */
+  publish?: {
+    trace?: boolean;
+    memory?: boolean;
+    messages?: boolean;
+    /** TCP port for the HTTP MCP server. When omitted, server runs in-process only. */
+    endpoint?: number;
+  };
+  /** Peer lattices this one will discover at boot. Each subscription either references a
+   *  same-process peer by latticeId (in-process registry) OR a remote URL (HTTP MCP). */
+  subscriptions?: Array<{
+    latticeId: string;
+    /** Resource being subscribed. Currently only 'memory' + 'messages' are wired through MCP;
+     *  'trace' uses the in-process ObservationStream until trace.subscribe is exposed via MCP. */
+    resource: 'trace' | 'memory' | 'messages';
+    /** Cross-process: full MCP endpoint URL (e.g. http://host:7301/mcp). When omitted,
+     *  the in-process registry is the source. */
+    url?: string;
+  }>;
 }
