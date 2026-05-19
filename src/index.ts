@@ -13,12 +13,16 @@ export function instantiate(config: LatticeConfig): Agent {
 
 // Re-export types so consumers don't have to deep-import.
 export type {
+  ActionInvocation,
   Agent,
   AgentState,
+  Capability,
+  CapabilityContext,
   ControlSurface,
   DriveConfig,
   EngagementResult,
   EngineRef,
+  GoalCompletionContext,
   GoalConfig,
   IdentityConfig,
   LatticeConfig,
@@ -31,6 +35,8 @@ export type {
   TraceEntry,
   TrainingModeConfig,
 } from './types.js';
+
+export { parseInvocation, renderCapabilityCatalog } from './capabilities/index.js';
 
 export { PHASES } from './types.js';
 export { PRESETS, DEFAULT_PRESET, CAUTIOUS_PRESET, EXPLORER_PRESET, PRODUCTION_PRESET, controlsFromPreset } from './controls/presets.js';

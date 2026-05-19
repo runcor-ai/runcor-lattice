@@ -14,6 +14,7 @@ coverage
 examples/*-output/
 examples/*-results.json
 examples/traces/
+examples/vuln-test-output/
 
 # Editor temp files
 *.swp

@@ -19,6 +19,10 @@ Build order (per `runcor-lattice-build-spec.md`):
 7. ✅ Training mode (cold-start humility caps autonomy until N validated engagements complete; adversarial review at independent cadence asks "would we still promote these?"; procedural-promotion gating deferred — needs memory candidate state)
 8. ✅ Control surface (ControlSurfaceApplicator wires autonomy+riskTolerance→substrate discernment mode, exploration→recall breadth scaling, dialecticDepth→dialectic; 4 presets shipped; static dials warn once at cycle 0)
 9. ✅ Lattice protocol (in-process publishTrace/subscribeToTrace/bridgeMemory/sendMessage with process-local registry; cross-process MCP server + ReachableSource discovery deferred — placeholder marked in src/protocol/index.ts with the exact integration plan)
+
+### Beyond the 9 steps
+
+10. ✅ Capability system + act phase (Capability registry, INVOKE-line parser, executeCapability dispatch; act phase parses & executes, judge evaluates the result, write records it. `GoalConfig.completion` predicate now drives goal-complete exit). `examples/vertical-slice.ts` ships the spec's day-1 engagement (3-file vulnerability audit). Run with `OPENAI_API_KEY` + `OPENROUTER_API_KEY` set.
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)

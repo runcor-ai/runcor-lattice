@@ -14,10 +14,34 @@ export interface LatticeConfig {
   drives: DriveConfig;
   engine: EngineRef;
   controls: ControlSurface;
+  capabilities?: Capability[];
   trace?: TraceConfig;
   trainingMode?: TrainingModeConfig;
   reviewCycle?: { everyNCycles: number };
   protocol?: LatticeProtocolConfig;
+}
+
+/** A capability the agent can invoke during the act phase. */
+export interface Capability {
+  /** Short identifier — invoked by the agent as `INVOKE: <name> {args json}`. */
+  name: string;
+  /** What the capability does + arg shape — shown to the agent in the decide phase. */
+  description: string;
+  /** Implementation. Returns a string summary the agent sees as the action's result. */
+  handler: (args: Record<string, unknown>, ctx: CapabilityContext) => Promise<string>;
+}
+
+export interface CapabilityContext {
+  cycle: number;
+  engagementId: string;
+}
+
+/** Captured invocation produced by the act phase. */
+export interface ActionInvocation {
+  name: string;
+  args: Record<string, unknown>;
+  result: string;
+  durationMs: number;
 }
 
 export interface TrainingModeConfig {
@@ -69,9 +93,17 @@ export interface GoalConfig {
   /** Initial goals seeded at instantiation. Empty array = lattice discovers its own. */
   initial: Array<{ statement: string; level: 'purpose' | 'objective' | 'initiative' }>;
   /** Completion predicate. When this returns true, the loop exits cleanly. */
-  completion?: (state: AgentState) => boolean;
+  completion?: (state: GoalCompletionContext) => boolean;
   /** Persistence path. */
   dbPath: string;
+}
+
+export interface GoalCompletionContext {
+  cycle: number;
+  /** Names of actions invoked across the engagement so far. */
+  actionsInvoked: string[];
+  /** Most recent action invocation. */
+  lastAction: ActionInvocation | null;
 }
 
 export interface DriveConfig {

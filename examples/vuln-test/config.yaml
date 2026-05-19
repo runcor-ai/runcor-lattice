@@ -1,0 +1,17 @@
+# config.yaml — service config (deployment)
+
+service:
+  name: user-service
+  port: 8080
+
+database:
+  host: db.internal
+  user: app
+  password: hunter2          # plaintext password committed to source
+
+cors:
+  allow_origins: ["*"]       # wide-open CORS, including credentials
+  allow_credentials: true
+
+tls:
+  enabled: false             # plaintext in production

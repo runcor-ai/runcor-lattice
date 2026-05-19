@@ -29,6 +29,8 @@ import { createSelfReview, type SelfReview } from '../review/index.js';
 import { createTrainingMode, type TrainingMode } from '../training/index.js';
 import { createControlSurfaceApplicator, type ControlSurfaceApplicator, type EffectiveControls } from '../controls/surface.js';
 import { createLatticeProtocol, registerPeerMemory, type LatticeProtocol } from '../protocol/index.js';
+import { parseInvocation, executeCapability, renderCapabilityCatalog } from '../capabilities/index.js';
+import type { ActionInvocation, Capability } from '../types.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -56,8 +58,14 @@ export class Cycle implements Agent {
   private lastWrappedPrompt: WrappedPrompt | null = null;
   /** Most recent recall result — decide phase consumes this. */
   private lastRecall: RecalledMemory[] = [];
-  /** Most recent decide result — act phase will consume this when it lands. */
+  /** Most recent decide result — act phase consumes this. */
   private lastDecision: Decision | null = null;
+  /** Most recent action invocation — judge + write phases consume this. */
+  private lastAction: ActionInvocation | null = null;
+  /** Names of all actions invoked in this engagement (for goal completion). */
+  private readonly actionsInvoked: string[] = [];
+  /** Capabilities available to the agent. */
+  private readonly capabilities: Capability[];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
@@ -66,6 +74,7 @@ export class Cycle implements Agent {
   constructor(private readonly config: LatticeConfig) {
     this.engagementId = `eng-${Date.now()}-${Math.floor(Math.random() * 1e6).toString(36)}`;
     this.controls = { ...config.controls };
+    this.capabilities = config.capabilities ?? [];
     this.substrate = createSubstrate(
       config.substrate,
       config.identity.description,
@@ -139,12 +148,15 @@ export class Cycle implements Agent {
 
       if (this.status !== 'running') break;
 
+      const goalsComplete = this.config.goals.completion
+        ? this.config.goals.completion({ cycle: this.cycleCount, actionsInvoked: [...this.actionsInvoked], lastAction: this.lastAction })
+        : false;
       const exit = computeExit({
         cycle: this.cycleCount,
         budget: this.controls.budget,
         spent: { dollars: this.totalCostUsd, tokens: this.totalTokens.input + this.totalTokens.output },
         elapsedMs: Date.now() - this.startedAt,
-        goalsComplete: false,
+        goalsComplete,
         substrateHardStop: this.substrateFlagCount >= this.HARD_STOP_FLAG_THRESHOLD,
       });
       if (exit !== null) {
@@ -296,15 +308,44 @@ export class Cycle implements Agent {
         }
         break;
       }
-      case 'act':     this.emit('act',     this.cycleCount, { stub: true }); break;
+      case 'act': {
+        // Parse the dialectic's decision for an INVOKE directive and execute the matching
+        // capability. When no decision text or no INVOKE line is present, the act phase is
+        // a no-op for this cycle.
+        this.lastAction = null;
+        const answer = this.lastDecision?.answer ?? '';
+        const parsed = parseInvocation(answer);
+        if (!parsed) {
+          this.emit('act', this.cycleCount, { invoked: null, reason: 'no INVOKE directive in decision' });
+          break;
+        }
+        const exec = await executeCapability(parsed, this.capabilities, {
+          cycle: this.cycleCount,
+          engagementId: this.engagementId,
+        });
+        if (exec.error) {
+          this.emit('act', this.cycleCount, { invoked: parsed.name, error: exec.error });
+          break;
+        }
+        this.lastAction = exec.invocation;
+        if (exec.invocation) {
+          this.actionsInvoked.push(exec.invocation.name);
+          this.emit('act', this.cycleCount, {
+            invoked: exec.invocation.name,
+            argsKeys: Object.keys(exec.invocation.args),
+            resultLength: exec.invocation.result.length,
+            durationMs: exec.invocation.durationMs,
+          });
+        }
+        break;
+      }
       case 'judge': {
-        // Skeleton mode: no real LLM output to judge yet. We evaluate a placeholder pass-string
-        // so the discernment gate's wiring is exercised. When the act phase produces real output,
-        // that output flows here instead. The result drives substrate-hard-stop exit when
-        // judgment escalates.
+        // Judge the agent's actual output for this cycle. When act produced an invocation,
+        // the result string is the output under evaluation. Otherwise we judge the decision
+        // text (so the discernment gate still gets a meaningful sample even on no-action cycles).
         const input = this.lastWrappedPrompt?.system ?? '';
-        const stubOutput = 'No action taken this cycle (skeleton mode).';
-        const verdict = await this.substrate.judge(input, stubOutput);
+        const output = this.lastAction?.result ?? this.lastDecision?.answer ?? '(no output this cycle)';
+        const verdict = await this.substrate.judge(input, output);
         if (verdict.outcome !== 'pass') {
           this.substrateFlagCount += 1;
         }
@@ -317,9 +358,10 @@ export class Cycle implements Agent {
       }
       case 'write': {
         // Persist an episodic event for this cycle + run R9 consolidation (decay + promotion).
-        // The episodic event for the skeleton is minimal — real act-phase output will replace
-        // the content string when act lands.
-        const content = `Cycle ${this.cycleCount}: skeleton tick (no action). Identity: ${this.config.identity.description}.`;
+        // Content composition: action result when one happened, otherwise the decision text.
+        const content = this.lastAction
+          ? `Cycle ${this.cycleCount}: invoked ${this.lastAction.name}(${JSON.stringify(this.lastAction.args).slice(0, 200)}). Result: ${this.lastAction.result.slice(0, 500)}`
+          : `Cycle ${this.cycleCount}: no action invoked. Decision: ${this.lastDecision?.answer.slice(0, 300) ?? '(none)'}`;
         try {
           const recorded = await this.memory.record(content, { tags: ['episodic', `cycle:${this.cycleCount}`], R: 0.5 });
           const consolidated = await this.memory.cycle(this.cycleCount);
@@ -410,7 +452,8 @@ export class Cycle implements Agent {
       `Identity: ${this.config.identity.description}`,
       goal ? `Goals:\n${goal}` : 'Goals: (none configured)',
       `Recalled memory:\n${recallSummary}`,
-      `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why?`,
+      renderCapabilityCatalog(this.capabilities),
+      `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`,
     ].join('\n\n');
   }
 
