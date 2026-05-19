@@ -23,6 +23,7 @@ import { computeExit, type ExitReason } from './exit.js';
 import { pulse, type PulseResult } from './pulse.js';
 import { createSubstrate, type Substrate, type WrappedPrompt } from '../substrate/index.js';
 import { createMemory, type Memory, type RecalledMemory } from '../memory/index.js';
+import { createDialectic, type Dialectic, type Decision } from '../dialectic/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -38,10 +39,13 @@ export class Cycle implements Agent {
   private startedAt = 0;
   private readonly substrate: Substrate;
   private readonly memory: Memory;
+  private readonly dialectic: Dialectic;
   /** Most recent ground() output — judge() needs the same input the agent saw. */
   private lastWrappedPrompt: WrappedPrompt | null = null;
-  /** Most recent recall result — decide phase will consume this in a later step. */
+  /** Most recent recall result — decide phase consumes this. */
   private lastRecall: RecalledMemory[] = [];
+  /** Most recent decide result — act phase will consume this when it lands. */
+  private lastDecision: Decision | null = null;
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
@@ -56,6 +60,7 @@ export class Cycle implements Agent {
       config.identity.initialClaims ?? [],
     );
     this.memory = createMemory(config.memory);
+    this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth);
   }
 
   async run(): Promise<EngagementResult> {
@@ -197,7 +202,32 @@ export class Cycle implements Agent {
         }
         break;
       }
-      case 'decide':  this.emit('decide',  this.cycleCount, { stub: true }); break;
+      case 'decide': {
+        // Build the decision problem from recalled memory + goal context. When dialectic is
+        // disabled, this still runs (returns a placeholder) so the cycle stays observable.
+        const problem = this.makeDecideProblem();
+        // Re-read depth dial each cycle so adjust() takes effect mid-flight.
+        this.dialectic.setDepth(this.controls.dialecticDepth);
+        try {
+          this.lastDecision = await this.dialectic.decide({ problem });
+          this.totalCostUsd += this.lastDecision.costUsd;
+          this.emit('decide', this.cycleCount, {
+            enabled: this.lastDecision.enabled,
+            rounds: this.lastDecision.rounds,
+            converged: this.lastDecision.converged,
+            convergenceReason: this.lastDecision.convergenceReason,
+            costUsd: this.lastDecision.costUsd,
+            answerLength: this.lastDecision.answer.length,
+          });
+        } catch (e) {
+          this.lastDecision = null;
+          this.emit('decide', this.cycleCount, {
+            error: e instanceof Error ? e.message : String(e),
+            enabled: this.dialectic.isEnabled(),
+          });
+        }
+        break;
+      }
       case 'act':     this.emit('act',     this.cycleCount, { stub: true }); break;
       case 'judge': {
         // Skeleton mode: no real LLM output to judge yet. We evaluate a placeholder pass-string
@@ -259,6 +289,19 @@ export class Cycle implements Agent {
     return this.config.goals.initial
       .map((g, i) => `${i + 1}. (${g.level}) ${g.statement}`)
       .join('\n');
+  }
+
+  private makeDecideProblem(): string {
+    const goal = this.renderGoalContext();
+    const recallSummary = this.lastRecall.length > 0
+      ? this.lastRecall.map((r) => `- [${r.cube}, M=${r.M.toFixed(2)}] ${r.content.slice(0, 200)}`).join('\n')
+      : '(no relevant memory recalled)';
+    return [
+      `Identity: ${this.config.identity.description}`,
+      goal ? `Goals:\n${goal}` : 'Goals: (none configured)',
+      `Recalled memory:\n${recallSummary}`,
+      `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why?`,
+    ].join('\n\n');
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────

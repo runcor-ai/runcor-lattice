@@ -13,7 +13,8 @@ Build order (per `runcor-lattice-build-spec.md`):
 1. ✅ Loop skeleton (phases, pulse, exit)
 2. ✅ Substrate (laws + identity prior + reality + goal context layered into ground; discernment gate in judge; substrate-hard-stop wired)
 3. ✅ Memory (recall in `recall` phase, episodic record + R9 consolidation in `write` phase; disabled-mode no-op when no OpenAI key)
-4. ⏳ Dialectic (Player/Coach/Judge over existing engine) — next
+4. ✅ Dialectic (Player/Coach/Judge in `decide` phase via runcor-dialectic; dial maps shallow/medium/deep to maxRounds; disabled-mode when no provider key)
+5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence) — next
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)
