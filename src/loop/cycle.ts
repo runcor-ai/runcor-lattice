@@ -25,6 +25,7 @@ import { createSubstrate, type Substrate, type WrappedPrompt } from '../substrat
 import { createMemory, type Memory, type RecalledMemory } from '../memory/index.js';
 import { createDialectic, type Dialectic, type Decision } from '../dialectic/index.js';
 import { createTrace, type Trace } from '../trace/index.js';
+import { createSelfReview, type SelfReview } from '../review/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -40,6 +41,7 @@ export class Cycle implements Agent {
   private readonly substrate: Substrate;
   private readonly memory: Memory;
   private readonly dialectic: Dialectic;
+  private readonly selfReview: SelfReview;
   /** Most recent ground() output — judge() needs the same input the agent saw. */
   private lastWrappedPrompt: WrappedPrompt | null = null;
   /** Most recent recall result — decide phase consumes this. */
@@ -63,6 +65,12 @@ export class Cycle implements Agent {
     this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth);
     this.trace = createTrace(config.trace);
     this.trace.start(this.engagementId);
+    this.selfReview = createSelfReview(
+      this.memory,
+      this.dialectic,
+      config.identity.description,
+      () => this.renderGoalContext(),
+    );
   }
 
   async run(): Promise<EngagementResult> {
@@ -274,6 +282,29 @@ export class Cycle implements Agent {
       case 'pulse': {
         const pulseResult: PulseResult = pulse({ cycle: this.cycleCount, drivePressure: this.controls.drivePressure });
         this.emit('pulse', this.cycleCount, { ...pulseResult });
+        // Self-review cadence: when reviewCadence > 0 and we've completed a multiple of it,
+        // run the higher-altitude review against the recent memory window. Emit under the
+        // pulse phase tag (Phase is a closed enum; reviews are a between-cycle event).
+        const cadence = Math.max(0, this.controls.reviewCadence | 0);
+        if (cadence > 0 && this.cycleCount > 0 && this.cycleCount % cadence === 0) {
+          try {
+            const verdict = await this.selfReview.runReview(this.cycleCount);
+            this.totalCostUsd += verdict.costUsd;
+            this.emit('pulse', this.cycleCount, {
+              event: 'self-review',
+              enabled: verdict.enabled,
+              costUsd: verdict.costUsd,
+              window: verdict.window,
+              summary: verdict.summary,
+              recommendation: verdict.recommendation,
+            });
+          } catch (e) {
+            this.emit('pulse', this.cycleCount, {
+              event: 'self-review-error',
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
         break;
       }
     }
