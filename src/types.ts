@@ -67,6 +67,10 @@ export interface IdentityConfig {
   description: string;
   /** Optional pre-loaded SelfTheory claims (e.g. inherited from a trained lattice). */
   initialClaims?: string[];
+  /** SQLite path for the SelfTheory store. Omit for ephemeral / disabled. */
+  dbPath?: string;
+  /** Cycles between dialectic-driven reflective updates. 0 disables. Default 20. */
+  reflectEvery?: number;
 }
 
 export interface SubstrateConfig {
@@ -94,8 +98,10 @@ export interface GoalConfig {
   initial: Array<{ statement: string; level: 'purpose' | 'objective' | 'initiative' }>;
   /** Completion predicate. When this returns true, the loop exits cleanly. */
   completion?: (state: GoalCompletionContext) => boolean;
-  /** Persistence path. */
+  /** Persistence path — ':memory:' or omit disables runcor-goals (uses seeded initial only). */
   dbPath: string;
+  /** Cycles between dialectic-driven proposal rounds. 0 disables. Default 10. */
+  proposeEvery?: number;
 }
 
 export interface GoalCompletionContext {

@@ -31,6 +31,19 @@ export interface RecordResult {
   nodeId: string | null;
 }
 
+export interface NodeSummary {
+  id: string;
+  content: string;
+  M: number;
+  R: number;
+  f: number;
+  t: number;
+  cube: 'short' | 'long' | 'candidate';
+  createdAt: number;
+  lastAccessed: number;
+  tags: string[];
+}
+
 export interface Memory {
   /** Top-k semantic recall against the current cycle's query. */
   recall(query: string, k?: number): Promise<RecalledMemory[]>;
@@ -50,6 +63,10 @@ export interface Memory {
   validateCandidate(id: string): Promise<boolean>;
   /** Discard a candidate (external rejection). */
   rejectCandidate(id: string): boolean;
+  /** List nodes in a specific cube — used by Bridge memory inspector. */
+  listByCube(cube: 'short' | 'long' | 'candidate'): NodeSummary[];
+  /** Substring search across stored content — non-semantic, used by the inspector. */
+  searchByText(query: string, limit?: number): NodeSummary[];
 }
 
 // ─── Implementation ────────────────────────────────────────────────────────
@@ -131,6 +148,37 @@ class LatticeMemory implements Memory {
   rejectCandidate(id: string): boolean {
     return this.system.rejectCandidate(id);
   }
+
+  listByCube(cube: 'short' | 'long' | 'candidate'): NodeSummary[] {
+    return this.system.getAll()
+      .filter((n) => n.cube === cube)
+      .map(toSummary)
+      .sort((a, b) => b.M - a.M);
+  }
+
+  searchByText(query: string, limit = 50): NodeSummary[] {
+    if (!query) return this.system.getAll().slice(0, limit).map(toSummary);
+    const q = query.toLowerCase();
+    return this.system.getAll()
+      .filter((n) => n.content.toLowerCase().includes(q))
+      .slice(0, limit)
+      .map(toSummary);
+  }
+}
+
+function toSummary(n: { id: string; content: string; M: number; R: number; f: number; t: number; cube: string; createdAt: number; lastAccessed: number; tags: string[] }): NodeSummary {
+  return {
+    id: n.id,
+    content: n.content,
+    M: n.M,
+    R: n.R,
+    f: n.f,
+    t: n.t,
+    cube: n.cube as 'short' | 'long' | 'candidate',
+    createdAt: n.createdAt,
+    lastAccessed: n.lastAccessed,
+    tags: n.tags,
+  };
 }
 
 class DisabledMemory implements Memory {
@@ -143,6 +191,8 @@ class DisabledMemory implements Memory {
   getCandidates(): Array<{ id: string; content: string; M: number }> { return []; }
   async validateCandidate(_id: string): Promise<boolean> { return false; }
   rejectCandidate(_id: string): boolean { return false; }
+  listByCube(_cube: 'short' | 'long' | 'candidate'): NodeSummary[] { return []; }
+  searchByText(_query: string, _limit?: number): NodeSummary[] { return []; }
 }
 
 export function createMemory(config: MemoryConfig, opts?: { gating?: 'direct' | 'candidate' }): Memory {

@@ -37,6 +37,8 @@ export interface Decision {
   costUsd: number;
   durationMs: number;
   enabled: boolean;
+  /** Per-role cost rollup from the transcript (player/coach/judge → usd). */
+  costByRole: Record<string, number>;
 }
 
 export type DialecticDepth = 'shallow' | 'medium' | 'deep';
@@ -74,6 +76,10 @@ class LatticeDialectic implements Dialectic {
       ...(typeof input.budgetCapUsd === 'number' ? { budget_cap_usd: input.budgetCapUsd } : {}),
       ...(this.hasOverrides() ? { roles: this.buildRoleOverrides() } : {}),
     });
+    const costByRole: Record<string, number> = {};
+    for (const r of result.transcript ?? []) {
+      costByRole[r.role] = (costByRole[r.role] ?? 0) + (r.cost_usd ?? 0);
+    }
     return {
       answer: result.answer,
       rounds: result.rounds,
@@ -82,6 +88,7 @@ class LatticeDialectic implements Dialectic {
       costUsd: result.cost?.usd ?? 0,
       durationMs: result.duration_ms ?? 0,
       enabled: true,
+      costByRole,
     };
   }
 
@@ -132,6 +139,7 @@ class DisabledDialectic implements Dialectic {
       costUsd: 0,
       durationMs: 0,
       enabled: false,
+      costByRole: {},
     };
   }
   isEnabled(): boolean { return false; }

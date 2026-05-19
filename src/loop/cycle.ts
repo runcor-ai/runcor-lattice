@@ -31,6 +31,8 @@ import { createControlSurfaceApplicator, type ControlSurfaceApplicator, type Eff
 import { createLatticeProtocol, registerPeerMemory, type LatticeProtocol } from '../protocol/index.js';
 import { parseInvocation, executeCapability, renderCapabilityCatalog } from '../capabilities/index.js';
 import type { ActionInvocation, Capability } from '../types.js';
+import { createIdentity, reflectIdentity, type Identity, type SelfTheorySnapshot } from '../identity/index.js';
+import { createGoalsAdapter, proposeGoalsViaDialectic, type GoalsAdapter, type GoalSnapshot } from '../goals/index.js';
 
 function truncate(s: string, max: number): string {
   if (!s) return '';
@@ -71,6 +73,14 @@ export class Cycle implements Agent {
   private readonly actionsInvoked: string[] = [];
   /** Capabilities available to the agent. */
   private readonly capabilities: Capability[];
+  private readonly identity: Identity;
+  /** Snapshot of the most recent identity reflection — exposed via state() + Bridge. */
+  private lastIdentitySnapshot: SelfTheorySnapshot | null = null;
+  private readonly goals: GoalsAdapter;
+  /** Track recent invocations for identity.reflect() input. */
+  private readonly recentInvocations: ActionInvocation[] = [];
+  /** Operator-injected prompts queued by injectPrompt() — drained into the next cycle. */
+  private readonly injectedPrompts: string[] = [];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
@@ -90,6 +100,9 @@ export class Cycle implements Agent {
     const memoryGating: 'direct' | 'candidate' = config.trainingMode ? 'candidate' : 'direct';
     this.memory = createMemory(config.memory, { gating: memoryGating });
     this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth, config.controls.dialecticModels);
+    this.identity = createIdentity(config.identity, config.identity.dbPath, this.dialectic);
+    this.lastIdentitySnapshot = this.identity.current();
+    this.goals = createGoalsAdapter(config.goals, this.dialectic);
     this.trace = createTrace(config.trace);
     this.trace.start(this.engagementId);
     this.selfReview = createSelfReview(
@@ -119,6 +132,15 @@ export class Cycle implements Agent {
   /** Public access to the underlying LatticeProtocol — Bridge + cross-process tests use this. */
   protocolHandle(): LatticeProtocol {
     return this.protocol;
+  }
+
+  /** Underlying adapters — Bridge inspector pulls per-lattice data through these. */
+  memoryHandle(): Memory { return this.memory; }
+  identityHandle(): Identity { return this.identity; }
+  goalsHandle(): GoalsAdapter { return this.goals; }
+  /** Mid-flight prompt injection — operator nudge that prepends to the next cycle's prompt. */
+  injectPrompt(text: string): void {
+    if (text) this.injectedPrompts.push(text);
   }
 
   async run(): Promise<EngagementResult> {
@@ -318,9 +340,8 @@ export class Cycle implements Agent {
             converged: this.lastDecision.converged,
             convergenceReason: this.lastDecision.convergenceReason,
             costUsd: this.lastDecision.costUsd,
+            costByRole: this.lastDecision.costByRole,
             answerLength: this.lastDecision.answer.length,
-            // Surface the actual reasoning text so consumers (Bridge UI) can render it.
-            // Truncated to keep trace JSONL manageable; full text persists in the dialectic transcript.
             answerPreview: truncate(this.lastDecision.answer, 1200),
           });
         } catch (e) {
@@ -354,6 +375,8 @@ export class Cycle implements Agent {
         this.lastAction = exec.invocation;
         if (exec.invocation) {
           this.actionsInvoked.push(exec.invocation.name);
+          this.recentInvocations.push(exec.invocation);
+          if (this.recentInvocations.length > 20) this.recentInvocations.shift();
           this.emit('act', this.cycleCount, {
             invoked: exec.invocation.name,
             argsKeys: Object.keys(exec.invocation.args),
@@ -433,6 +456,44 @@ export class Cycle implements Agent {
             });
           }
         }
+        // Goal decay every cycle so accepted goals slowly lose intensity and retire.
+        if (this.goals.isEnabled()) {
+          try {
+            const decay = this.goals.decayStep(this.cycleCount);
+            if (decay.retiredThisStep > 0) {
+              this.emit('pulse', this.cycleCount, { event: 'goals-decayed', retired: decay.retiredThisStep, activeBefore: decay.activeBefore });
+            }
+          } catch { /* non-fatal */ }
+        }
+        // Goal proposal cadence — dialectic-driven new initiatives.
+        const proposeEvery = this.config.goals.proposeEvery ?? 10;
+        if (this.goals.isEnabled() && proposeEvery > 0 && this.cycleCount > 0 && this.cycleCount % proposeEvery === 0) {
+          try {
+            const recentNames = this.recentInvocations.map((a) => a.name);
+            const accepted = await proposeGoalsViaDialectic(this.goals, this.dialectic, this.cycleCount, recentNames, this.renderGoalContext());
+            if (accepted > 0) {
+              this.emit('pulse', this.cycleCount, { event: 'goals-proposed', accepted });
+            }
+          } catch (e) {
+            this.emit('pulse', this.cycleCount, { event: 'goals-propose-error', error: e instanceof Error ? e.message : String(e) });
+          }
+        }
+        // Identity reflection cadence — dialectic-driven update to SelfTheory claims.
+        const reflectEvery = this.config.identity.reflectEvery ?? 20;
+        if (this.identity.isEnabled() && reflectEvery > 0 && this.cycleCount > 0 && this.cycleCount % reflectEvery === 0) {
+          try {
+            const snap = await reflectIdentity(this.identity, this.dialectic, this.cycleCount, this.recentInvocations, this.renderGoalContext());
+            this.lastIdentitySnapshot = snap;
+            this.emit('pulse', this.cycleCount, {
+              event: 'identity-reflected',
+              version: snap.version,
+              claims: snap.claims,
+              traitsKeys: Object.keys(snap.traits),
+            });
+          } catch (e) {
+            this.emit('pulse', this.cycleCount, { event: 'identity-reflect-error', error: e instanceof Error ? e.message : String(e) });
+          }
+        }
         // Adversarial review cadence (training-mode only). Independent from self-review.
         if (this.trainingMode.shouldAdversarialReview(this.cycleCount)) {
           try {
@@ -462,6 +523,12 @@ export class Cycle implements Agent {
   }
 
   private renderGoalContext(): string {
+    // Prefer the LIVE goals stack (post-decay, post-propose). Fall back to initial config
+    // if the goals adapter is disabled.
+    const stack = this.goals.stack(this.cycleCount);
+    if (stack.length > 0) {
+      return stack.map((g, i) => `${i + 1}. (${g.level}, intensity=${g.intensity.toFixed(2)}) ${g.text}`).join('\n');
+    }
     if (this.config.goals.initial.length === 0) return '';
     return this.config.goals.initial
       .map((g, i) => `${i + 1}. (${g.level}) ${g.statement}`)
@@ -473,13 +540,21 @@ export class Cycle implements Agent {
     const recallSummary = this.lastRecall.length > 0
       ? this.lastRecall.map((r) => `- [${r.cube}, M=${r.M.toFixed(2)}] ${r.content.slice(0, 200)}`).join('\n')
       : '(no relevant memory recalled)';
-    return [
-      `Identity: ${this.config.identity.description}`,
+    // Drain any operator-injected prompts and surface them prominently.
+    const injected = this.injectedPrompts.splice(0).map((p) => `[OPERATOR MESSAGE]\n${p}`).join('\n\n');
+    const idSnap = this.lastIdentitySnapshot;
+    const idBlock = idSnap && idSnap.claims.length > 0
+      ? `Identity (v${idSnap.version}):\n${idSnap.claims.map((c) => '  - ' + c).join('\n')}`
+      : `Identity: ${this.config.identity.description}`;
+    const parts = [
+      idBlock,
       goal ? `Goals:\n${goal}` : 'Goals: (none configured)',
       `Recalled memory:\n${recallSummary}`,
       renderCapabilityCatalog(this.capabilities),
+      injected,
       `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`,
-    ].join('\n\n');
+    ];
+    return parts.filter(Boolean).join('\n\n');
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────
