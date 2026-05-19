@@ -365,7 +365,10 @@ export class Cycle implements Agent {
             costUsd: this.lastDecision.costUsd,
             costByRole: this.lastDecision.costByRole,
             answerLength: this.lastDecision.answer.length,
-            answerPreview: truncate(this.lastDecision.answer, 1200),
+            // 1200 was too short — CFO calculations with show-your-work would truncate
+            // before the final total. 3000 is enough for typical full responses while
+            // keeping JSONL line size bounded.
+            answerPreview: truncate(this.lastDecision.answer, 3000),
           });
         } catch (e) {
           this.lastDecision = null;
