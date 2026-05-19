@@ -80,7 +80,10 @@ export class Cycle implements Agent {
       config.identity.description,
       config.identity.initialClaims ?? [],
     );
-    this.memory = createMemory(config.memory);
+    // Training-mode gating: when a TrainingModeConfig is present, route promotions
+    // through the candidate cube so external validation is required before long-term.
+    const memoryGating: 'direct' | 'candidate' = config.trainingMode ? 'candidate' : 'direct';
+    this.memory = createMemory(config.memory, { gating: memoryGating });
     this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth);
     this.trace = createTrace(config.trace);
     this.trace.start(this.engagementId);

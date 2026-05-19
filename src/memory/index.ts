@@ -41,9 +41,15 @@ export interface Memory {
   /** Run R9 consolidation cycle (decay + promotion + plan refresh). */
   cycle(currentCycle: number): Promise<{ promoted: number; forgotten: number }>;
   /** Snapshot of in-memory counts for trace / dashboard inspection. */
-  stats(): { total: number; shortCube: number; longCube: number };
+  stats(): { total: number; shortCube: number; longCube: number; candidateCube: number };
   /** Whether the adapter is operating in disabled (no-key) mode. */
   isEnabled(): boolean;
+  /** List pending procedural candidates. Used by training mode to drive validation. */
+  getCandidates(): Array<{ id: string; content: string; M: number }>;
+  /** Promote a candidate to the long cube (external validation signal). */
+  validateCandidate(id: string): Promise<boolean>;
+  /** Discard a candidate (external rejection). */
+  rejectCandidate(id: string): boolean;
 }
 
 // ─── Implementation ────────────────────────────────────────────────────────
@@ -52,14 +58,16 @@ class LatticeMemory implements Memory {
   private readonly system: MemorySystem;
   private readonly db: MemoryDatabase;
 
-  constructor(config: MemoryConfig, private readonly openaiKey: string) {
+  constructor(config: MemoryConfig, private readonly openaiKey: string, gating?: 'direct' | 'candidate') {
     this.db = new MemoryDatabase(config.dbPath);
+    const overrides: Record<string, unknown> = {};
+    if (typeof config.tau === 'number') overrides.tau = config.tau;
+    if (typeof config.depth === 'number') overrides.D = config.depth;
+    if (gating) overrides.promotionGating = gating;
     this.system = new MemorySystem({
       db: this.db,
       openaiApiKey: openaiKey,
-      ...(typeof config.tau === 'number' || typeof config.depth === 'number'
-        ? { config: { ...(typeof config.tau === 'number' ? { tau: config.tau } : {}), ...(typeof config.depth === 'number' ? { D: config.depth } : {}) } }
-        : {}),
+      ...(Object.keys(overrides).length > 0 ? { config: overrides as Record<string, never> } : {}),
     });
   }
 
@@ -95,19 +103,33 @@ class LatticeMemory implements Memory {
     };
   }
 
-  stats(): { total: number; shortCube: number; longCube: number } {
+  stats(): { total: number; shortCube: number; longCube: number; candidateCube: number } {
     const all = this.system.getAll();
     let short = 0;
     let long = 0;
+    let candidate = 0;
     for (const n of all) {
       if (n.cube === 'long') long += 1;
+      else if (n.cube === 'candidate') candidate += 1;
       else short += 1;
     }
-    return { total: all.length, shortCube: short, longCube: long };
+    return { total: all.length, shortCube: short, longCube: long, candidateCube: candidate };
   }
 
   isEnabled(): boolean {
     return !!this.openaiKey;
+  }
+
+  getCandidates(): Array<{ id: string; content: string; M: number }> {
+    return this.system.getCandidates().map((n) => ({ id: n.id, content: n.content, M: n.M }));
+  }
+
+  async validateCandidate(id: string): Promise<boolean> {
+    return this.system.validateCandidate(id);
+  }
+
+  rejectCandidate(id: string): boolean {
+    return this.system.rejectCandidate(id);
   }
 }
 
@@ -116,12 +138,15 @@ class DisabledMemory implements Memory {
   async record(_content: string, _opts?: RecordOptions): Promise<RecordResult> { return { action: 'disabled', nodeId: null }; }
   reinforce(_id: string, _amount?: number): boolean { return false; }
   async cycle(_currentCycle: number): Promise<{ promoted: number; forgotten: number }> { return { promoted: 0, forgotten: 0 }; }
-  stats(): { total: number; shortCube: number; longCube: number } { return { total: 0, shortCube: 0, longCube: 0 }; }
+  stats(): { total: number; shortCube: number; longCube: number; candidateCube: number } { return { total: 0, shortCube: 0, longCube: 0, candidateCube: 0 }; }
   isEnabled(): boolean { return false; }
+  getCandidates(): Array<{ id: string; content: string; M: number }> { return []; }
+  async validateCandidate(_id: string): Promise<boolean> { return false; }
+  rejectCandidate(_id: string): boolean { return false; }
 }
 
-export function createMemory(config: MemoryConfig): Memory {
+export function createMemory(config: MemoryConfig, opts?: { gating?: 'direct' | 'candidate' }): Memory {
   const key = config.openaiKey ?? process.env['OPENAI_API_KEY'] ?? '';
   if (!key) return new DisabledMemory();
-  return new LatticeMemory(config, key);
+  return new LatticeMemory(config, key, opts?.gating);
 }

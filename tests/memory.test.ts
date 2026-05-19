@@ -78,7 +78,7 @@ describe('Memory adapter — disabled mode', () => {
     delete process.env.OPENAI_API_KEY;
     try {
       const m = createMemory({ dbPath: ':memory:' });
-      expect(m.stats()).toEqual({ total: 0, shortCube: 0, longCube: 0 });
+      expect(m.stats()).toEqual({ total: 0, shortCube: 0, longCube: 0, candidateCube: 0 });
     } finally {
       if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
     }
