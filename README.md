@@ -16,7 +16,8 @@ Build order (per `runcor-lattice-build-spec.md`):
 4. ✅ Dialectic (Player/Coach/Judge in `decide` phase via runcor-dialectic; dial maps shallow/medium/deep to maxRounds; disabled-mode when no provider key)
 5. ✅ Trace (JSONL per engagement, bounded in-memory ring, broadcast to ObservationStream subscribers; cycle delegates all trace ownership to the adapter)
 6. ✅ Self-review (compressed memory window every `controls.reviewCadence` cycles → dialectic → verdict + recommendation captured in trace; disabled-mode degrades cleanly)
-7. ⏳ Training mode primitives (validation gates, adversarial review) — next
+7. ✅ Training mode (cold-start humility caps autonomy until N validated engagements complete; adversarial review at independent cadence asks "would we still promote these?"; procedural-promotion gating deferred — needs memory candidate state)
+8. ⏳ Control surface (full dial wiring across substrate/memory/dialectic) — next
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)

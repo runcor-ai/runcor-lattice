@@ -29,6 +29,7 @@ export type {
   SubstrateConfig,
   TraceConfig,
   TraceEntry,
+  TrainingModeConfig,
 } from './types.js';
 
 export { PHASES } from './types.js';

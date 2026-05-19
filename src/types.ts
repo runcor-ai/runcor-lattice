@@ -15,9 +15,20 @@ export interface LatticeConfig {
   engine: EngineRef;
   controls: ControlSurface;
   trace?: TraceConfig;
-  trainingMode?: boolean;
+  trainingMode?: TrainingModeConfig;
   reviewCycle?: { everyNCycles: number };
   protocol?: LatticeProtocolConfig;
+}
+
+export interface TrainingModeConfig {
+  /** How many engagements must have been externally validated for cold-start humility to lift. */
+  validatedEngagementsRequired: number;
+  /** How many validated engagements have already completed before THIS engagement. */
+  priorValidatedEngagements: number;
+  /** Autonomy ceiling while cold-start is active (0..1). configured autonomy is clamped to this. */
+  coldStartAutonomyCap: number;
+  /** Cycles between adversarial reviews (0 = disabled). Independent of self-review cadence. */
+  adversarialReviewCadence: number;
 }
 
 export interface TraceConfig {

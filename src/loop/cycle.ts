@@ -26,6 +26,7 @@ import { createMemory, type Memory, type RecalledMemory } from '../memory/index.
 import { createDialectic, type Dialectic, type Decision } from '../dialectic/index.js';
 import { createTrace, type Trace } from '../trace/index.js';
 import { createSelfReview, type SelfReview } from '../review/index.js';
+import { createTrainingMode, type TrainingMode } from '../training/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -42,6 +43,9 @@ export class Cycle implements Agent {
   private readonly memory: Memory;
   private readonly dialectic: Dialectic;
   private readonly selfReview: SelfReview;
+  private readonly trainingMode: TrainingMode;
+  /** Did we already emit a 'training-mode-active' trace entry? Only fire once per engagement. */
+  private trainingNoticeEmitted = false;
   /** Most recent ground() output — judge() needs the same input the agent saw. */
   private lastWrappedPrompt: WrappedPrompt | null = null;
   /** Most recent recall result — decide phase consumes this. */
@@ -71,11 +75,26 @@ export class Cycle implements Agent {
       config.identity.description,
       () => this.renderGoalContext(),
     );
+    this.trainingMode = createTrainingMode(
+      config.trainingMode,
+      this.memory,
+      this.dialectic,
+      config.identity.description,
+    );
   }
 
   async run(): Promise<EngagementResult> {
     this.startedAt = Date.now();
     this.emit('observe', 0, { event: 'engagement-started', config: { identity: this.config.identity.description } });
+    if (this.trainingMode.isEnabled()) {
+      const snap = this.trainingMode.snapshot();
+      this.emit('observe', 0, {
+        event: 'training-mode-active',
+        ...snap,
+        effectiveAutonomy: this.trainingMode.effectiveAutonomy(this.controls.autonomy),
+      });
+      this.trainingNoticeEmitted = true;
+    }
 
     while (this.status === 'running') {
       this.cycleCount += 1;
@@ -301,6 +320,25 @@ export class Cycle implements Agent {
           } catch (e) {
             this.emit('pulse', this.cycleCount, {
               event: 'self-review-error',
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        // Adversarial review cadence (training-mode only). Independent from self-review.
+        if (this.trainingMode.shouldAdversarialReview(this.cycleCount)) {
+          try {
+            const result = await this.trainingMode.runAdversarialReview(this.cycleCount);
+            this.totalCostUsd += result.costUsd;
+            this.emit('pulse', this.cycleCount, {
+              event: 'adversarial-review',
+              enabled: result.enabled,
+              examined: result.examined,
+              recommendations: result.recommendations,
+              costUsd: result.costUsd,
+            });
+          } catch (e) {
+            this.emit('pulse', this.cycleCount, {
+              event: 'adversarial-review-error',
               error: e instanceof Error ? e.message : String(e),
             });
           }
