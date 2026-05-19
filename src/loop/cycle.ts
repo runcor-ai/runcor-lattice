@@ -22,6 +22,7 @@ import { PHASES } from '../types.js';
 import { computeExit, type ExitReason } from './exit.js';
 import { pulse, type PulseResult } from './pulse.js';
 import { createSubstrate, type Substrate, type WrappedPrompt } from '../substrate/index.js';
+import { createMemory, type Memory, type RecalledMemory } from '../memory/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -36,8 +37,11 @@ export class Cycle implements Agent {
   private totalTokens = { input: 0, output: 0 };
   private startedAt = 0;
   private readonly substrate: Substrate;
+  private readonly memory: Memory;
   /** Most recent ground() output — judge() needs the same input the agent saw. */
   private lastWrappedPrompt: WrappedPrompt | null = null;
+  /** Most recent recall result — decide phase will consume this in a later step. */
+  private lastRecall: RecalledMemory[] = [];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
@@ -51,6 +55,7 @@ export class Cycle implements Agent {
       config.identity.description,
       config.identity.initialClaims ?? [],
     );
+    this.memory = createMemory(config.memory);
   }
 
   async run(): Promise<EngagementResult> {
@@ -171,7 +176,27 @@ export class Cycle implements Agent {
         });
         break;
       }
-      case 'recall':  this.emit('recall',  this.cycleCount, { stub: true }); break;
+      case 'recall': {
+        // Query memory against the current goal context. When goals aren't yet wired,
+        // the agent description doubles as the recall query (gives meaningful results
+        // even for the day-3 skeleton).
+        const query = this.renderGoalContext() || this.config.identity.description;
+        try {
+          this.lastRecall = await this.memory.recall(query, this.controls.memoryRecallBreadth);
+          this.emit('recall', this.cycleCount, {
+            queryLength: query.length,
+            recalled: this.lastRecall.length,
+            enabled: this.memory.isEnabled(),
+          });
+        } catch (e) {
+          this.lastRecall = [];
+          this.emit('recall', this.cycleCount, {
+            error: e instanceof Error ? e.message : String(e),
+            enabled: this.memory.isEnabled(),
+          });
+        }
+        break;
+      }
       case 'decide':  this.emit('decide',  this.cycleCount, { stub: true }); break;
       case 'act':     this.emit('act',     this.cycleCount, { stub: true }); break;
       case 'judge': {
@@ -192,7 +217,29 @@ export class Cycle implements Agent {
         });
         break;
       }
-      case 'write':   this.emit('write',   this.cycleCount, { stub: true }); break;
+      case 'write': {
+        // Persist an episodic event for this cycle + run R9 consolidation (decay + promotion).
+        // The episodic event for the skeleton is minimal — real act-phase output will replace
+        // the content string when act lands.
+        const content = `Cycle ${this.cycleCount}: skeleton tick (no action). Identity: ${this.config.identity.description}.`;
+        try {
+          const recorded = await this.memory.record(content, { tags: ['episodic', `cycle:${this.cycleCount}`], R: 0.5 });
+          const consolidated = await this.memory.cycle(this.cycleCount);
+          this.emit('write', this.cycleCount, {
+            recordAction: recorded.action,
+            nodeId: recorded.nodeId,
+            promoted: consolidated.promoted,
+            forgotten: consolidated.forgotten,
+            enabled: this.memory.isEnabled(),
+          });
+        } catch (e) {
+          this.emit('write', this.cycleCount, {
+            error: e instanceof Error ? e.message : String(e),
+            enabled: this.memory.isEnabled(),
+          });
+        }
+        break;
+      }
       case 'pulse': {
         const pulseResult: PulseResult = pulse({ cycle: this.cycleCount, drivePressure: this.controls.drivePressure });
         this.emit('pulse', this.cycleCount, { ...pulseResult });
