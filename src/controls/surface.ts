@@ -53,6 +53,9 @@ class LatticeControlSurfaceApplicator implements ControlSurfaceApplicator {
     const discernmentMode = deriveDiscernmentMode(effectiveAutonomy, controls.riskTolerance);
     this.substrate.setDiscernmentMode(discernmentMode);
     this.dialectic.setDepth(controls.dialecticDepth);
+    // Per-role model overrides re-apply each cycle so the operator can change them
+    // mid-flight via PATCH /lattices/:id { controls: { dialecticModels: {...} } }.
+    this.dialectic.setModels(controls.dialecticModels);
     const effectiveRecallBreadth = Math.max(1, Math.round(controls.memoryRecallBreadth * (1 + clamp01(controls.exploration))));
     return {
       effectiveAutonomy,

@@ -64,6 +64,48 @@ describe('Dialectic adapter — disabled mode', () => {
   });
 });
 
+function withDisabledKeys<T>(fn: () => T | Promise<T>): Promise<T> {
+  const prev = { or: process.env.OPENROUTER_API_KEY, an: process.env.ANTHROPIC_API_KEY };
+  delete process.env.OPENROUTER_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  return Promise.resolve(fn()).finally(() => {
+    if (prev.or !== undefined) process.env.OPENROUTER_API_KEY = prev.or;
+    if (prev.an !== undefined) process.env.ANTHROPIC_API_KEY = prev.an;
+  });
+}
+
+describe('Dialectic adapter — model overrides', () => {
+  it('currentModels() returns canonical defaults when no overrides', async () => {
+    await withDisabledKeys(() => {
+      const d = createDialectic({ type: 'runcor-engine', apiKeys: {} }, 'shallow');
+      const m = d.currentModels();
+      expect(m.player).toContain('nemotron');
+      expect(m.coach).toContain('qwen');
+      expect(m.judge).toContain('llama');
+    });
+  });
+
+  it('currentModels() reflects partial overrides + canonical fallback for unset roles', async () => {
+    await withDisabledKeys(() => {
+      const d = createDialectic({ type: 'runcor-engine', apiKeys: { openrouter: 'stub' } }, 'shallow', { player: 'openrouter/anthropic/claude-haiku-4-5' });
+      const m = d.currentModels();
+      expect(m.player).toBe('openrouter/anthropic/claude-haiku-4-5');
+      expect(m.coach).toContain('qwen');
+      expect(m.judge).toContain('llama');
+    });
+  });
+
+  it('setModels() updates the effective models', async () => {
+    await withDisabledKeys(() => {
+      const d = createDialectic({ type: 'runcor-engine', apiKeys: { openrouter: 'stub' } }, 'shallow');
+      d.setModels({ judge: 'openrouter/openai/gpt-4o-mini' });
+      expect(d.currentModels().judge).toBe('openrouter/openai/gpt-4o-mini');
+      d.setModels(undefined);
+      expect(d.currentModels().judge).toContain('llama');
+    });
+  });
+});
+
 describe('Dialectic wired into the cycle — disabled mode', () => {
   it('decide phase emits trace entry with enabled=false and convergenceReason=disabled', async () => {
     const prev = { or: process.env.OPENROUTER_API_KEY, an: process.env.ANTHROPIC_API_KEY };

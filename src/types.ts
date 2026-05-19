@@ -134,7 +134,19 @@ export interface ControlSurface {
   planStability: number;
   memoryRecallBreadth: number;
   budget: { tokens?: number; dollars?: number; time?: number };
+  /** Optional per-role model overrides for the Player/Coach/Judge dialectic.
+   *  When omitted, runcor-dialectic's canonical defaults apply
+   *  (Player: nemotron-120b, Coach: qwen3-32b, Judge: llama-3.1-8b). */
+  dialecticModels?: { player?: string; coach?: string; judge?: string };
 }
+
+/** Canonical defaults from runcor-dialectic — exposed so consumers (Bridge UI) can show
+ *  what the "default" actually resolves to without importing runcor-dialectic. */
+export const DEFAULT_DIALECTIC_MODELS = {
+  player: 'openrouter/nvidia/nemotron-3-super-120b-a12b',
+  coach: 'openrouter/qwen/qwen3-32b',
+  judge: 'openrouter/meta-llama/llama-3.1-8b-instruct',
+} as const;
 
 // ─── Agent (returned by Loop.instantiate) ────────────────────────────────────
 

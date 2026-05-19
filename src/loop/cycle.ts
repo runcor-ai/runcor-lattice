@@ -84,7 +84,7 @@ export class Cycle implements Agent {
     // through the candidate cube so external validation is required before long-term.
     const memoryGating: 'direct' | 'candidate' = config.trainingMode ? 'candidate' : 'direct';
     this.memory = createMemory(config.memory, { gating: memoryGating });
-    this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth);
+    this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth, config.controls.dialecticModels);
     this.trace = createTrace(config.trace);
     this.trace.start(this.engagementId);
     this.selfReview = createSelfReview(

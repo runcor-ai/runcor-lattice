@@ -11,8 +11,12 @@
 // When no OpenRouter key is configured, the adapter goes into disabled-mode and returns
 // a no-op DecisionResult so the cycle stays runnable in tests + smoke runs.
 
-import { dialectic, type DialecticResult } from 'runcor-dialectic';
+import { dialectic, canonicalRoleSet, type DialecticResult } from 'runcor-dialectic';
 import type { EngineRef } from '../types.js';
+
+/** Per-role model overrides — when a role's model differs from the canonical default,
+ *  build a RoleConfig override using the canonical prompts but with the substituted model. */
+export type DialecticModels = { player?: string; coach?: string; judge?: string };
 
 // ─── Public adapter surface ────────────────────────────────────────────────
 
@@ -42,6 +46,11 @@ export interface Dialectic {
   isEnabled(): boolean;
   /** The current depth setting; cycle re-reads this each decide() to pick up dial adjusts. */
   setDepth(depth: DialecticDepth): void;
+  /** Set per-role model overrides for subsequent decide() calls. Pass {} or undefined to
+   *  fall back to canonical defaults. */
+  setModels(models: DialecticModels | undefined): void;
+  /** Current effective models (overrides merged onto canonical defaults). */
+  currentModels(): { player: string; coach: string; judge: string };
 }
 
 // ─── Implementation ────────────────────────────────────────────────────────
@@ -50,8 +59,11 @@ const DEPTH_TO_ROUNDS: Record<DialecticDepth, number> = { shallow: 1, medium: 3,
 
 class LatticeDialectic implements Dialectic {
   private depth: DialecticDepth;
-  constructor(initialDepth: DialecticDepth) {
+  private models: DialecticModels;
+
+  constructor(initialDepth: DialecticDepth, initialModels: DialecticModels = {}) {
     this.depth = initialDepth;
+    this.models = { ...initialModels };
   }
 
   async decide(input: DecisionInput): Promise<Decision> {
@@ -60,6 +72,7 @@ class LatticeDialectic implements Dialectic {
       problem: input.problem,
       maxRounds,
       ...(typeof input.budgetCapUsd === 'number' ? { budget_cap_usd: input.budgetCapUsd } : {}),
+      ...(this.hasOverrides() ? { roles: this.buildRoleOverrides() } : {}),
     });
     return {
       answer: result.answer,
@@ -72,12 +85,40 @@ class LatticeDialectic implements Dialectic {
     };
   }
 
-  isEnabled(): boolean {
-    return true;
+  isEnabled(): boolean { return true; }
+
+  setDepth(depth: DialecticDepth): void { this.depth = depth; }
+
+  setModels(models: DialecticModels | undefined): void {
+    this.models = models ? { ...models } : {};
   }
 
-  setDepth(depth: DialecticDepth): void {
-    this.depth = depth;
+  currentModels(): { player: string; coach: string; judge: string } {
+    return {
+      player: this.models.player ?? canonicalRoleSet.roles['player']!.model,
+      coach: this.models.coach ?? canonicalRoleSet.roles['coach']!.model,
+      judge: this.models.judge ?? canonicalRoleSet.roles['judge']!.model,
+    };
+  }
+
+  private hasOverrides(): boolean {
+    return !!(this.models.player || this.models.coach || this.models.judge);
+  }
+
+  private buildRoleOverrides(): Record<string, { role: string; model: string; systemPrompt: string; revisionSystemPrompt?: string }> {
+    const overrides: Record<string, { role: string; model: string; systemPrompt: string; revisionSystemPrompt?: string }> = {};
+    for (const roleName of ['player', 'coach', 'judge'] as const) {
+      const override = this.models[roleName];
+      if (!override) continue;
+      const canonical = canonicalRoleSet.roles[roleName]!;
+      overrides[roleName] = {
+        role: roleName,
+        model: override,
+        systemPrompt: canonical.systemPrompt,
+        ...(canonical.revisionSystemPrompt ? { revisionSystemPrompt: canonical.revisionSystemPrompt } : {}),
+      };
+    }
+    return overrides;
   }
 }
 
@@ -95,10 +136,18 @@ class DisabledDialectic implements Dialectic {
   }
   isEnabled(): boolean { return false; }
   setDepth(_depth: DialecticDepth): void { /* no-op */ }
+  setModels(_models: DialecticModels | undefined): void { /* no-op */ }
+  currentModels(): { player: string; coach: string; judge: string } {
+    return {
+      player: canonicalRoleSet.roles['player']!.model,
+      coach: canonicalRoleSet.roles['coach']!.model,
+      judge: canonicalRoleSet.roles['judge']!.model,
+    };
+  }
 }
 
-export function createDialectic(engine: EngineRef, depth: DialecticDepth): Dialectic {
+export function createDialectic(engine: EngineRef, depth: DialecticDepth, models?: DialecticModels): Dialectic {
   const hasProviderKey = !!(engine.apiKeys.openrouter || engine.apiKeys.anthropic || process.env['OPENROUTER_API_KEY'] || process.env['ANTHROPIC_API_KEY']);
   if (!hasProviderKey) return new DisabledDialectic();
-  return new LatticeDialectic(depth);
+  return new LatticeDialectic(depth, models);
 }
