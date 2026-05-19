@@ -37,6 +37,8 @@ export type {
 } from './types.js';
 
 export { parseInvocation, renderCapabilityCatalog } from './capabilities/index.js';
+export { createWebCapabilities, WebCache } from './capabilities/web.js';
+export type { WebKeys } from './capabilities/web.js';
 
 export { PHASES, DEFAULT_DIALECTIC_MODELS } from './types.js';
 export { PRESETS, DEFAULT_PRESET, CAUTIOUS_PRESET, EXPLORER_PRESET, PRODUCTION_PRESET, controlsFromPreset } from './controls/presets.js';

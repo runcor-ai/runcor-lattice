@@ -275,7 +275,10 @@ export class Cycle implements Agent {
         const inbox = this.protocol.drainInbox();
         this.emit('observe', this.cycleCount, {
           inboxMessages: inbox.length,
-          ...(inbox.length > 0 ? { messagesFrom: inbox.map((m) => m.from) } : {}),
+          ...(inbox.length > 0 ? {
+            messagesFrom: inbox.map((m) => m.from),
+            messages: inbox.map((m) => ({ from: m.from, text: m.text.slice(0, 500), ts: m.ts })),
+          } : {}),
         });
         break;
       }
