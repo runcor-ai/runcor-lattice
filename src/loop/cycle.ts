@@ -564,7 +564,9 @@ export class Cycle implements Agent {
       ? this.lastRecall.map((r) => `- [${r.cube}, M=${r.M.toFixed(2)}] ${r.content.slice(0, 200)}`).join('\n')
       : '(no relevant memory recalled)';
     // Drain any operator-injected prompts and surface them prominently.
-    const injected = this.injectedPrompts.splice(0).map((p) => `[OPERATOR MESSAGE]\n${p}`).join('\n\n');
+    const injectedRaw = this.injectedPrompts.splice(0);
+    const hasInjected = injectedRaw.length > 0;
+    const injected = injectedRaw.map((p) => `[OPERATOR MESSAGE]\n${p}`).join('\n\n');
     const idSnap = this.lastIdentitySnapshot;
     const idBlock = idSnap && idSnap.claims.length > 0
       ? `Identity (v${idSnap.version}):\n${idSnap.claims.map((c) => '  - ' + c).join('\n')}`
@@ -574,6 +576,15 @@ export class Cycle implements Agent {
     const knowledgeBlock = this.knowledgeBundles.length > 0
       ? `Knowledge bundles (authoritative — consult before answering):\n${this.knowledgeBundles.map((b) => `═══ ${b.name}${b.description ? ` (${b.description})` : ''} ═══\n${b.content}`).join('\n\n')}`
       : '';
+    // The closing instruction depends on whether the operator injected a question.
+    // When yes: answer the operator FIRST, in plain language, citing the knowledge
+    // bundle when the answer comes from it. This prevents the model from getting
+    // tangled in meta-deliberation about strategy when the operator just wants a
+    // direct answer. Without this, the dialectic's Coach round can loop on tangents
+    // ("authority grants", "stakeholder communication") instead of just answering.
+    const closingInstruction = hasInjected
+      ? `Cycle ${this.cycleCount}: Answer the [OPERATOR MESSAGE] directly. Lead with the answer (max 3 sentences); if the answer comes from a knowledge bundle, quote the relevant line. Add any follow-up action AFTER the answer. End with one INVOKE line per the capability catalog if a tool call is appropriate, or omit if no action is needed.`
+      : `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`;
     const parts = [
       idBlock,
       knowledgeBlock,
@@ -581,7 +592,7 @@ export class Cycle implements Agent {
       `Recalled memory:\n${recallSummary}`,
       renderCapabilityCatalog(this.capabilities),
       injected,
-      `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`,
+      closingInstruction,
     ];
     return parts.filter(Boolean).join('\n\n');
   }
