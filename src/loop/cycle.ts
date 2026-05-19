@@ -28,6 +28,7 @@ import { createTrace, type Trace } from '../trace/index.js';
 import { createSelfReview, type SelfReview } from '../review/index.js';
 import { createTrainingMode, type TrainingMode } from '../training/index.js';
 import { createControlSurfaceApplicator, type ControlSurfaceApplicator, type EffectiveControls } from '../controls/surface.js';
+import { createLatticeProtocol, registerPeerMemory, type LatticeProtocol } from '../protocol/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -46,6 +47,7 @@ export class Cycle implements Agent {
   private readonly selfReview: SelfReview;
   private readonly trainingMode: TrainingMode;
   private readonly controlApplicator: ControlSurfaceApplicator;
+  private readonly protocol: LatticeProtocol;
   /** Effective controls for the CURRENT cycle (set by apply() at top of each cycle). */
   private effective: EffectiveControls | null = null;
   /** Did we already emit a 'training-mode-active' trace entry? Only fire once per engagement. */
@@ -86,6 +88,15 @@ export class Cycle implements Agent {
       config.identity.description,
     );
     this.controlApplicator = createControlSurfaceApplicator(this.substrate, this.dialectic, this.trainingMode);
+    this.protocol = createLatticeProtocol(config.protocol);
+    if (config.protocol) {
+      // Register this lattice's memory so peers can bridgeMemory() to it.
+      registerPeerMemory(config.protocol.latticeId, this.memory);
+      // Publish our trace stream to the registry so peers can subscribeToTrace().
+      if (config.protocol.publish?.trace) {
+        this.protocol.publishTrace(config.protocol.latticeId, this.observe());
+      }
+    }
   }
 
   async run(): Promise<EngagementResult> {
@@ -210,7 +221,15 @@ export class Cycle implements Agent {
 
   private async runPhase(phase: Phase): Promise<void> {
     switch (phase) {
-      case 'observe': this.emit('observe', this.cycleCount, { stub: true }); break;
+      case 'observe': {
+        // Drain peer-protocol inbox (if any) into the cycle's observation.
+        const inbox = this.protocol.drainInbox();
+        this.emit('observe', this.cycleCount, {
+          inboxMessages: inbox.length,
+          ...(inbox.length > 0 ? { messagesFrom: inbox.map((m) => m.from) } : {}),
+        });
+        break;
+      }
       case 'ground': {
         // Substrate wraps the per-cycle instruction with laws + identity + reality + goal context.
         // The cycle's "input" is the cycle-prompt; for the skeleton it's a generic instruction.

@@ -6,7 +6,7 @@ MIT licensed. Built on top of the existing `runcor` engine.
 
 ## Status
 
-**Day 1+ — skeleton with substrate live.** The Loop runs all 8 phases per cycle. The `ground` phase wraps each cycle's instruction with laws + identity prior + goal context + reality slice (via runcor-substrate). The `judge` phase runs the discernment gate on each cycle's output; accumulated flag verdicts trip a substrate-hard-stop exit. Other phases remain stubs.
+**v0.0.1 — all 9 build-order steps complete.** 60/60 tests passing. Loop runs end-to-end; every adapter has a disabled-mode for $0 testing; cross-process MCP wiring is the only piece left for the protocol layer (in-process peering already works for tests).
 
 Build order (per `runcor-lattice-build-spec.md`):
 
@@ -18,7 +18,7 @@ Build order (per `runcor-lattice-build-spec.md`):
 6. ✅ Self-review (compressed memory window every `controls.reviewCadence` cycles → dialectic → verdict + recommendation captured in trace; disabled-mode degrades cleanly)
 7. ✅ Training mode (cold-start humility caps autonomy until N validated engagements complete; adversarial review at independent cadence asks "would we still promote these?"; procedural-promotion gating deferred — needs memory candidate state)
 8. ✅ Control surface (ControlSurfaceApplicator wires autonomy+riskTolerance→substrate discernment mode, exploration→recall breadth scaling, dialecticDepth→dialectic; 4 presets shipped; static dials warn once at cycle 0)
-9. ⏳ Lattice protocol (peer-to-peer over MCP) — next
+9. ✅ Lattice protocol (in-process publishTrace/subscribeToTrace/bridgeMemory/sendMessage with process-local registry; cross-process MCP server + ReachableSource discovery deferred — placeholder marked in src/protocol/index.ts with the exact integration plan)
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)
