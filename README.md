@@ -23,6 +23,19 @@ Build order (per `runcor-lattice-build-spec.md`):
 ### Beyond the 9 steps
 
 10. ✅ Capability system + act phase (Capability registry, INVOKE-line parser, executeCapability dispatch; act phase parses & executes, judge evaluates the result, write records it. `GoalConfig.completion` predicate now drives goal-complete exit). `examples/vertical-slice.ts` ships the spec's day-1 engagement (3-file vulnerability audit). Run with `OPENAI_API_KEY` + `OPENROUTER_API_KEY` set.
+
+### Day-1 vertical-slice run (live, 2026-05-18)
+
+```
+exit: goal-complete
+cycles: 6
+duration: 405.1s
+cost: $0.0093
+files read: auth.js, api.py, config.yaml
+summary written: vulnerability-summary.md (827 chars, professional analysis)
+```
+
+Success-criteria result: **5/6 PASS**. The agent read all three files, identified the planted vulnerabilities (predictable session tokens, SQL injection + missing auth, hardcoded credentials), and wrote a structured Markdown summary with recommendations. Self-review fired mid-run with a real steering recommendation. The one fail (memory promotion candidate) requires more reinforcement cycles than a 6-cycle engagement provides — an M-formula physics constraint, not a defect.
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)

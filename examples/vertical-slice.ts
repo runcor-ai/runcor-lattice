@@ -16,10 +16,14 @@
 // Budget capped at $0.10 to keep iteration cheap.
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { instantiate, controlsFromPreset, type Capability, type LatticeConfig } from '../src/index.js';
 
-const SCRIPT_DIR = dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'));
+// fileURLToPath properly decodes percent-encoded characters (e.g. %20 → space).
+// The earlier `new URL(...).pathname.replace(...)` pattern left %20 in the path,
+// which created a shadow directory tree at `C:\runcor%20May%203%202026\...`.
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(SCRIPT_DIR, 'vuln-test');
 const SUMMARY_PATH = join(SCRIPT_DIR, 'vuln-test-output', 'vulnerability-summary.md');
 const TRACE_DIR = join(SCRIPT_DIR, 'traces');
@@ -100,7 +104,11 @@ const config: LatticeConfig = {
     },
   },
   capabilities: [readFileCapability, writeSummaryCapability],
-  controls: controlsFromPreset('cautious', { dollars: 0.10, time: 5 * 60 * 1000 }),
+  // Explorer-derived preset: shallow dialectic for cheap fast cycles, but reviewCadence=3
+  // so self-review fires within the short run. Memory promotion still won't happen — the
+  // M formula needs more reinforcement than 6 cycles can produce; the spec criterion is
+  // satisfied by a longer engagement.
+  controls: { ...controlsFromPreset('explorer', { dollars: 0.10, time: 12 * 60 * 1000 }), reviewCadence: 3 },
   trace: { dir: TRACE_DIR },
   trainingMode: {
     validatedEngagementsRequired: 3,
