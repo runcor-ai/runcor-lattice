@@ -27,6 +27,7 @@ export type {
   ObservationStream,
   Phase,
   SubstrateConfig,
+  TraceConfig,
   TraceEntry,
 } from './types.js';
 

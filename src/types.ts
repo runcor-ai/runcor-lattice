@@ -14,9 +14,17 @@ export interface LatticeConfig {
   drives: DriveConfig;
   engine: EngineRef;
   controls: ControlSurface;
+  trace?: TraceConfig;
   trainingMode?: boolean;
   reviewCycle?: { everyNCycles: number };
   protocol?: LatticeProtocolConfig;
+}
+
+export interface TraceConfig {
+  /** Directory to write JSONL trace files into. Omit for in-memory-only (testing, smoke runs). */
+  dir?: string;
+  /** Soft cap on in-memory buffer size. When exceeded, oldest entries are flushed/dropped. Default: 10_000. */
+  memoryBufferCap?: number;
 }
 
 export interface IdentityConfig {

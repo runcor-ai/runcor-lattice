@@ -24,6 +24,7 @@ import { pulse, type PulseResult } from './pulse.js';
 import { createSubstrate, type Substrate, type WrappedPrompt } from '../substrate/index.js';
 import { createMemory, type Memory, type RecalledMemory } from '../memory/index.js';
 import { createDialectic, type Dialectic, type Decision } from '../dialectic/index.js';
+import { createTrace, type Trace } from '../trace/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -31,8 +32,7 @@ export class Cycle implements Agent {
   private currentPhase: AgentState['currentPhase'] = 'idle';
   private stopRequested = false;
   private readonly engagementId: string;
-  private readonly traceBuffer: TraceEntry[] = [];
-  private readonly observers: Array<(entry: TraceEntry) => void> = [];
+  private readonly trace: Trace;
   private controls: ControlSurface;
   private totalCostUsd = 0;
   private totalTokens = { input: 0, output: 0 };
@@ -61,6 +61,8 @@ export class Cycle implements Agent {
     );
     this.memory = createMemory(config.memory);
     this.dialectic = createDialectic(config.engine, config.controls.dialecticDepth);
+    this.trace = createTrace(config.trace);
+    this.trace.start(this.engagementId);
   }
 
   async run(): Promise<EngagementResult> {
@@ -107,7 +109,7 @@ export class Cycle implements Agent {
   }
 
   state(): AgentState {
-    const last = this.traceBuffer[this.traceBuffer.length - 1];
+    const last = this.trace.latest();
     const base: AgentState = {
       engagementId: this.engagementId,
       cycleCount: this.cycleCount,
@@ -126,11 +128,10 @@ export class Cycle implements Agent {
     // that will never resolve.
     let resolve: ((entry: TraceEntry | null) => void) | null = null;
     let closed = false;
-    const subscriber = (entry: TraceEntry): void => {
+    const unsubscribe = this.trace.subscribe((entry) => {
       if (closed) return;
       if (resolve) { resolve(entry); resolve = null; } else { queue.push(entry); }
-    };
-    this.observers.push(subscriber);
+    });
     return {
       async *[Symbol.asyncIterator]() {
         while (true) {
@@ -138,7 +139,6 @@ export class Cycle implements Agent {
           if (closed) break;
           const next = await new Promise<TraceEntry | null>((res) => { resolve = res; });
           if (next === null) {
-            // Close fired mid-await — drain any entries enqueued since then before exiting.
             while (queue.length > 0) yield queue.shift()!;
             break;
           }
@@ -147,6 +147,7 @@ export class Cycle implements Agent {
       },
       close() {
         closed = true;
+        unsubscribe();
         if (resolve) { resolve(null); resolve = null; }
       },
     };
@@ -308,8 +309,7 @@ export class Cycle implements Agent {
 
   private emit(phase: Phase, cycle: number, data: Record<string, unknown>): void {
     const entry: TraceEntry = { engagementId: this.engagementId, cycle, phase, ts: Date.now(), data };
-    this.traceBuffer.push(entry);
-    for (const obs of this.observers) obs(entry);
+    this.trace.capture(entry);
   }
 
   private computeBudgetRemaining(): AgentState['budgetRemaining'] {
@@ -329,7 +329,7 @@ export class Cycle implements Agent {
   }
 
   private makeResult(reason: ExitReason): EngagementResult {
-    return {
+    const result: EngagementResult = {
       engagementId: this.engagementId,
       exitReason: reason,
       cyclesRun: this.cycleCount,
@@ -337,7 +337,9 @@ export class Cycle implements Agent {
       totalTokens: this.totalTokens,
       durationMs: Date.now() - this.startedAt,
       finalState: this.state(),
-      tracePath: `(in-memory; ${this.traceBuffer.length} entries)`,
+      tracePath: this.trace.path(),
     };
+    this.trace.end(result);
+    return result;
   }
 }

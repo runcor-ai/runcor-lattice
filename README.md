@@ -14,7 +14,8 @@ Build order (per `runcor-lattice-build-spec.md`):
 2. ✅ Substrate (laws + identity prior + reality + goal context layered into ground; discernment gate in judge; substrate-hard-stop wired)
 3. ✅ Memory (recall in `recall` phase, episodic record + R9 consolidation in `write` phase; disabled-mode no-op when no OpenAI key)
 4. ✅ Dialectic (Player/Coach/Judge in `decide` phase via runcor-dialectic; dial maps shallow/medium/deep to maxRounds; disabled-mode when no provider key)
-5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence) — next
+5. ✅ Trace (JSONL per engagement, bounded in-memory ring, broadcast to ObservationStream subscribers; cycle delegates all trace ownership to the adapter)
+6. ⏳ Self-review (compressed memory dialectic at cadence) — next
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)

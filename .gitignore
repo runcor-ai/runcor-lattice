@@ -13,6 +13,7 @@ coverage
 # Local example output
 examples/*-output/
 examples/*-results.json
+examples/traces/
 
 # Editor temp files
 *.swp

@@ -62,6 +62,12 @@ const config: LatticeConfig = {
   },
   trainingMode: true,
   reviewCycle: { everyNCycles: 5 },
+  trace: {
+    // Per-engagement JSONL written under examples/traces/. Inspect after the run with:
+    //   head -n 20 examples/traces/<engagementId>.jsonl
+    dir: 'examples/traces',
+    memoryBufferCap: 5_000,
+  },
 };
 
 async function main(): Promise<void> {
