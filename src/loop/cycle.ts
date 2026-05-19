@@ -32,6 +32,11 @@ import { createLatticeProtocol, registerPeerMemory, type LatticeProtocol } from 
 import { parseInvocation, executeCapability, renderCapabilityCatalog } from '../capabilities/index.js';
 import type { ActionInvocation, Capability } from '../types.js';
 
+function truncate(s: string, max: number): string {
+  if (!s) return '';
+  return s.length <= max ? s : s.slice(0, max) + '…';
+}
+
 export class Cycle implements Agent {
   private cycleCount = 0;
   private status: AgentState['status'] = 'running';
@@ -282,6 +287,13 @@ export class Cycle implements Agent {
             recalled: this.lastRecall.length,
             breadth,
             enabled: this.memory.isEnabled(),
+            // Show the actual recalled content (truncated per node) for trace inspection
+            nodes: this.lastRecall.slice(0, 5).map((n) => ({
+              cube: n.cube,
+              M: Number(n.M.toFixed(3)),
+              similarity: Number(n.similarity.toFixed(3)),
+              preview: truncate(n.content, 200),
+            })),
           });
         } catch (e) {
           this.lastRecall = [];
@@ -296,7 +308,6 @@ export class Cycle implements Agent {
         // Build the decision problem from recalled memory + goal context. When dialectic is
         // disabled, this still runs (returns a placeholder) so the cycle stays observable.
         const problem = this.makeDecideProblem();
-        // Re-read depth dial each cycle so adjust() takes effect mid-flight.
         this.dialectic.setDepth(this.controls.dialecticDepth);
         try {
           this.lastDecision = await this.dialectic.decide({ problem });
@@ -308,6 +319,9 @@ export class Cycle implements Agent {
             convergenceReason: this.lastDecision.convergenceReason,
             costUsd: this.lastDecision.costUsd,
             answerLength: this.lastDecision.answer.length,
+            // Surface the actual reasoning text so consumers (Bridge UI) can render it.
+            // Truncated to keep trace JSONL manageable; full text persists in the dialectic transcript.
+            answerPreview: truncate(this.lastDecision.answer, 1200),
           });
         } catch (e) {
           this.lastDecision = null;
@@ -343,7 +357,9 @@ export class Cycle implements Agent {
           this.emit('act', this.cycleCount, {
             invoked: exec.invocation.name,
             argsKeys: Object.keys(exec.invocation.args),
+            args: exec.invocation.args, // Full args for inspection (typically small JSON)
             resultLength: exec.invocation.result.length,
+            resultPreview: truncate(exec.invocation.result, 800),
             durationMs: exec.invocation.durationMs,
           });
         }
@@ -378,6 +394,7 @@ export class Cycle implements Agent {
           this.emit('write', this.cycleCount, {
             recordAction: recorded.action,
             nodeId: recorded.nodeId,
+            contentPreview: truncate(content, 400),
             promoted: consolidated.promoted,
             forgotten: consolidated.forgotten,
             enabled: this.memory.isEnabled(),
@@ -441,8 +458,6 @@ export class Cycle implements Agent {
   }
 
   private makeCycleInstruction(): string {
-    // Skeleton instruction — phases will replace this with prompts derived from recalled
-    // memory + dialectic-decided next action when those phases come online.
     return `Cycle ${this.cycleCount}: assess current state and choose next action.`;
   }
 
