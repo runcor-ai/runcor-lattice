@@ -33,3 +33,6 @@ export type {
 } from './types.js';
 
 export { PHASES } from './types.js';
+export { PRESETS, DEFAULT_PRESET, CAUTIOUS_PRESET, EXPLORER_PRESET, PRODUCTION_PRESET, controlsFromPreset } from './controls/presets.js';
+export { deriveDiscernmentMode } from './controls/surface.js';
+export type { EffectiveControls } from './controls/surface.js';

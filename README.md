@@ -17,7 +17,8 @@ Build order (per `runcor-lattice-build-spec.md`):
 5. ✅ Trace (JSONL per engagement, bounded in-memory ring, broadcast to ObservationStream subscribers; cycle delegates all trace ownership to the adapter)
 6. ✅ Self-review (compressed memory window every `controls.reviewCadence` cycles → dialectic → verdict + recommendation captured in trace; disabled-mode degrades cleanly)
 7. ✅ Training mode (cold-start humility caps autonomy until N validated engagements complete; adversarial review at independent cadence asks "would we still promote these?"; procedural-promotion gating deferred — needs memory candidate state)
-8. ⏳ Control surface (full dial wiring across substrate/memory/dialectic) — next
+8. ✅ Control surface (ControlSurfaceApplicator wires autonomy+riskTolerance→substrate discernment mode, exploration→recall breadth scaling, dialecticDepth→dialectic; 4 presets shipped; static dials warn once at cycle 0)
+9. ⏳ Lattice protocol (peer-to-peer over MCP) — next
 5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)

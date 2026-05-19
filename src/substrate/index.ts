@@ -40,11 +40,17 @@ export interface SubstrateContext {
   realitySlice?: RealitySlice;
 }
 
+export type DiscernmentMode = 'aggressive' | 'moderate' | 'conservative';
+
 export interface Substrate {
   ground(input: string, context: SubstrateContext): WrappedPrompt;
   judge(input: string, output: string, realitySlice?: RealitySlice): Promise<DiscernmentResult>;
   /** Snapshot of the configured laws (for trace / Bridge inspection). */
   laws(): string[];
+  /** Runtime discernment-mode change (driven by ControlSurface dial wiring). */
+  setDiscernmentMode(mode: DiscernmentMode): void;
+  /** Current effective discernment mode. */
+  discernmentMode(): DiscernmentMode;
 }
 
 // ─── Implementation ────────────────────────────────────────────────────────
@@ -52,6 +58,8 @@ export interface Substrate {
 class LatticeSubstrate implements Substrate {
   private readonly compiledLaws: string[];
   private readonly lawsPrompt: string;
+  /** Runtime-mutable discernment mode. Initialized from SubstrateConfig.discernmentMode. */
+  private mode: DiscernmentMode;
 
   constructor(
     private readonly config: SubstrateConfig,
@@ -60,6 +68,9 @@ class LatticeSubstrate implements Substrate {
   ) {
     this.compiledLaws = [...config.laws];
     this.lawsPrompt = this.compileLawsPrompt();
+    // Map the boolean-ish SubstrateConfig.discernmentMode onto the 3-level scale.
+    // 'strict' → 'aggressive' (most intervention). 'permissive' → 'moderate'.
+    this.mode = config.discernmentMode === 'permissive' ? 'moderate' : 'aggressive';
   }
 
   ground(input: string, context: SubstrateContext): WrappedPrompt {
@@ -88,12 +99,20 @@ class LatticeSubstrate implements Substrate {
       input,
       output,
       realitySlice: realitySlice ?? emptyRealitySlice(),
-      config: { mode: this.config.discernmentMode === 'permissive' ? 'moderate' : 'aggressive' },
+      config: { mode: this.mode },
     });
   }
 
   laws(): string[] {
     return [...this.compiledLaws];
+  }
+
+  setDiscernmentMode(mode: DiscernmentMode): void {
+    this.mode = mode;
+  }
+
+  discernmentMode(): DiscernmentMode {
+    return this.mode;
   }
 
   private renderIdentityPrior(): string {

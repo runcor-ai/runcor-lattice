@@ -27,6 +27,7 @@ import { createDialectic, type Dialectic, type Decision } from '../dialectic/ind
 import { createTrace, type Trace } from '../trace/index.js';
 import { createSelfReview, type SelfReview } from '../review/index.js';
 import { createTrainingMode, type TrainingMode } from '../training/index.js';
+import { createControlSurfaceApplicator, type ControlSurfaceApplicator, type EffectiveControls } from '../controls/surface.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -44,6 +45,9 @@ export class Cycle implements Agent {
   private readonly dialectic: Dialectic;
   private readonly selfReview: SelfReview;
   private readonly trainingMode: TrainingMode;
+  private readonly controlApplicator: ControlSurfaceApplicator;
+  /** Effective controls for the CURRENT cycle (set by apply() at top of each cycle). */
+  private effective: EffectiveControls | null = null;
   /** Did we already emit a 'training-mode-active' trace entry? Only fire once per engagement. */
   private trainingNoticeEmitted = false;
   /** Most recent ground() output — judge() needs the same input the agent saw. */
@@ -81,6 +85,7 @@ export class Cycle implements Agent {
       this.dialectic,
       config.identity.description,
     );
+    this.controlApplicator = createControlSurfaceApplicator(this.substrate, this.dialectic, this.trainingMode);
   }
 
   async run(): Promise<EngagementResult> {
@@ -95,9 +100,23 @@ export class Cycle implements Agent {
       });
       this.trainingNoticeEmitted = true;
     }
+    // One-shot warning at cycle 0: dials that can't change mid-flight.
+    const staticNotes = this.controlApplicator.staticDialNotes();
+    if (staticNotes.length > 0) {
+      this.emit('observe', 0, { event: 'static-dial-warning', notes: staticNotes });
+    }
 
     while (this.status === 'running') {
       this.cycleCount += 1;
+      // Apply control-surface dials BEFORE phases run, so mid-flight adjust() lands cleanly.
+      this.effective = this.controlApplicator.apply(this.controls);
+      this.emit('observe', this.cycleCount, {
+        event: 'effective-controls',
+        autonomy: this.effective.effectiveAutonomy,
+        discernmentMode: this.effective.discernmentMode,
+        recallBreadth: this.effective.effectiveRecallBreadth,
+        dialecticDepth: this.effective.effectiveDialecticDepth,
+      });
       for (const phase of PHASES) {
         if (this.stopRequested) {
           this.status = 'stopped';
@@ -214,11 +233,13 @@ export class Cycle implements Agent {
         // the agent description doubles as the recall query (gives meaningful results
         // even for the day-3 skeleton).
         const query = this.renderGoalContext() || this.config.identity.description;
+        const breadth = this.effective?.effectiveRecallBreadth ?? this.controls.memoryRecallBreadth;
         try {
-          this.lastRecall = await this.memory.recall(query, this.controls.memoryRecallBreadth);
+          this.lastRecall = await this.memory.recall(query, breadth);
           this.emit('recall', this.cycleCount, {
             queryLength: query.length,
             recalled: this.lastRecall.length,
+            breadth,
             enabled: this.memory.isEnabled(),
           });
         } catch (e) {
