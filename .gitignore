@@ -1,0 +1,20 @@
+node_modules
+dist
+.env
+.env.local
+coverage
+*.log
+.DS_Store
+.vscode
+.idea
+*.tsbuildinfo
+.claude/settings.local.json
+
+# Local example output
+examples/*-output/
+examples/*-results.json
+
+# Editor temp files
+*.swp
+*.swo
+*~

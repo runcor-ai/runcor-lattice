@@ -1,0 +1,55 @@
+{
+  "name": "runcor-lattice",
+  "version": "0.0.1",
+  "description": "Open-source cognitive runtime that turns an LLM into an autonomous entity. Composes the 14 runcor sibling components into a configurable, peer-aware lattice.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "runcor": "file:../runcor",
+    "runcor-coherence": "file:../runcor-coherence",
+    "runcor-data": "file:../runcor-data",
+    "runcor-dialectic": "file:../runcor-dialectic",
+    "runcor-drives": "file:../runcor-drives",
+    "runcor-goals": "file:../runcor-goals",
+    "runcor-identity": "file:../runcor-identity",
+    "runcor-integration": "file:../runcor-integration",
+    "runcor-memory": "file:../runcor-memory",
+    "runcor-meta": "file:../runcor-meta",
+    "runcor-skills": "file:../runcor-skills",
+    "runcor-substrate": "file:../runcor-substrate",
+    "runcor-temporal": "file:../runcor-temporal",
+    "runcor-watchdog": "file:../runcor-watchdog"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.22.2",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
