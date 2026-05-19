@@ -583,7 +583,18 @@ export class Cycle implements Agent {
     // direct answer. Without this, the dialectic's Coach round can loop on tangents
     // ("authority grants", "stakeholder communication") instead of just answering.
     const closingInstruction = hasInjected
-      ? `Cycle ${this.cycleCount}: Answer the [OPERATOR MESSAGE] directly. Lead with the answer (max 3 sentences); if the answer comes from a knowledge bundle, quote the relevant line. Add any follow-up action AFTER the answer. End with one INVOKE line per the capability catalog if a tool call is appropriate, or omit if no action is needed.`
+      ? `Cycle ${this.cycleCount}: The operator is asking you for a deliverable, not for your analysis of how to deliver it.
+
+OUTPUT REQUIREMENTS:
+- Your response IS the deliverable. Do not include meta-commentary like "here is the revised version", "we need to produce", "I will now write", "after considering the criticisms", or any preamble.
+- If the operator asked for a LinkedIn post, output ONLY the post body, ready to publish.
+- If they asked for a number, output one sentence with the number stated clearly.
+- If they asked for a recommendation, output the recommendation directly.
+- Quote the relevant knowledge bundle line ONLY when it's the answer or directly supports it — do not narrate your bundle-consultation process.
+- A separate "NEXT:" line at the end may add one follow-up action if appropriate.
+- An INVOKE line at the very end if a capability call is needed.
+
+Now produce the deliverable for: ${'\n'}${injected ? '' : '(no operator message — describe the next concrete action instead)'}`
       : `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`;
     const parts = [
       idBlock,
