@@ -21,6 +21,7 @@ import type {
 import { PHASES } from '../types.js';
 import { computeExit, type ExitReason } from './exit.js';
 import { pulse, type PulseResult } from './pulse.js';
+import { createSubstrate, type Substrate, type WrappedPrompt } from '../substrate/index.js';
 
 export class Cycle implements Agent {
   private cycleCount = 0;
@@ -34,10 +35,22 @@ export class Cycle implements Agent {
   private totalCostUsd = 0;
   private totalTokens = { input: 0, output: 0 };
   private startedAt = 0;
+  private readonly substrate: Substrate;
+  /** Most recent ground() output — judge() needs the same input the agent saw. */
+  private lastWrappedPrompt: WrappedPrompt | null = null;
+  /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
+  private substrateFlagCount = 0;
+  /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
+  private readonly HARD_STOP_FLAG_THRESHOLD = 3;
 
   constructor(private readonly config: LatticeConfig) {
     this.engagementId = `eng-${Date.now()}-${Math.floor(Math.random() * 1e6).toString(36)}`;
     this.controls = { ...config.controls };
+    this.substrate = createSubstrate(
+      config.substrate,
+      config.identity.description,
+      config.identity.initialClaims ?? [],
+    );
   }
 
   async run(): Promise<EngagementResult> {
@@ -63,7 +76,7 @@ export class Cycle implements Agent {
         spent: { dollars: this.totalCostUsd, tokens: this.totalTokens.input + this.totalTokens.output },
         elapsedMs: Date.now() - this.startedAt,
         goalsComplete: false,
-        substrateHardStop: false,
+        substrateHardStop: this.substrateFlagCount >= this.HARD_STOP_FLAG_THRESHOLD,
       });
       if (exit !== null) {
         this.status = this.exitReasonToStatus(exit);
@@ -141,11 +154,44 @@ export class Cycle implements Agent {
   private async runPhase(phase: Phase): Promise<void> {
     switch (phase) {
       case 'observe': this.emit('observe', this.cycleCount, { stub: true }); break;
-      case 'ground':  this.emit('ground',  this.cycleCount, { stub: true }); break;
+      case 'ground': {
+        // Substrate wraps the per-cycle instruction with laws + identity + reality + goal context.
+        // The cycle's "input" is the cycle-prompt; for the skeleton it's a generic instruction.
+        // When the act phase is wired, the act prompt will flow through here.
+        const goalContext = this.renderGoalContext();
+        const wrapped = this.substrate.ground(this.makeCycleInstruction(), {
+          engagementId: this.engagementId,
+          cycle: this.cycleCount,
+          goalContext,
+        });
+        this.lastWrappedPrompt = wrapped;
+        this.emit('ground', this.cycleCount, {
+          layers: wrapped.layers,
+          systemLength: wrapped.system.length,
+        });
+        break;
+      }
       case 'recall':  this.emit('recall',  this.cycleCount, { stub: true }); break;
       case 'decide':  this.emit('decide',  this.cycleCount, { stub: true }); break;
       case 'act':     this.emit('act',     this.cycleCount, { stub: true }); break;
-      case 'judge':   this.emit('judge',   this.cycleCount, { stub: true }); break;
+      case 'judge': {
+        // Skeleton mode: no real LLM output to judge yet. We evaluate a placeholder pass-string
+        // so the discernment gate's wiring is exercised. When the act phase produces real output,
+        // that output flows here instead. The result drives substrate-hard-stop exit when
+        // judgment escalates.
+        const input = this.lastWrappedPrompt?.system ?? '';
+        const stubOutput = 'No action taken this cycle (skeleton mode).';
+        const verdict = await this.substrate.judge(input, stubOutput);
+        if (verdict.outcome !== 'pass') {
+          this.substrateFlagCount += 1;
+        }
+        this.emit('judge', this.cycleCount, {
+          outcome: verdict.outcome,
+          flagCount: this.substrateFlagCount,
+          failedChecks: verdict.checks.filter((c) => !c.passed).map((c) => c.law),
+        });
+        break;
+      }
       case 'write':   this.emit('write',   this.cycleCount, { stub: true }); break;
       case 'pulse': {
         const pulseResult: PulseResult = pulse({ cycle: this.cycleCount, drivePressure: this.controls.drivePressure });
@@ -153,6 +199,19 @@ export class Cycle implements Agent {
         break;
       }
     }
+  }
+
+  private makeCycleInstruction(): string {
+    // Skeleton instruction — phases will replace this with prompts derived from recalled
+    // memory + dialectic-decided next action when those phases come online.
+    return `Cycle ${this.cycleCount}: assess current state and choose next action.`;
+  }
+
+  private renderGoalContext(): string {
+    if (this.config.goals.initial.length === 0) return '';
+    return this.config.goals.initial
+      .map((g, i) => `${i + 1}. (${g.level}) ${g.statement}`)
+      .join('\n');
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────

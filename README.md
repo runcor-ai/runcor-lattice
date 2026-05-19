@@ -6,18 +6,18 @@ MIT licensed. Built on top of the existing `runcor` engine.
 
 ## Status
 
-**Day 1 — skeleton.** The Loop runs all 8 phases per cycle (`observe → ground → recall → decide → act → judge → write → pulse`), captures a trace, and exits on configured budgets. Phase implementations are stubs that emit `{stub: true}` trace entries.
+**Day 1+ — skeleton with substrate live.** The Loop runs all 8 phases per cycle. The `ground` phase wraps each cycle's instruction with laws + identity prior + goal context + reality slice (via runcor-substrate). The `judge` phase runs the discernment gate on each cycle's output; accumulated flag verdicts trip a substrate-hard-stop exit. Other phases remain stubs.
 
-Build order ahead (per `runcor-lattice-build-spec.md`):
+Build order (per `runcor-lattice-build-spec.md`):
 
-1. ✅ Loop skeleton (phases, pulse, exit) — this commit
-2. ⏳ Substrate (law injection, identity prior, discernment gate)
-3. ⏳ Memory (cube schema, M formula, simple promotion)
+1. ✅ Loop skeleton (phases, pulse, exit)
+2. ✅ Substrate (laws + identity prior + reality + goal context layered into ground; discernment gate in judge; substrate-hard-stop wired)
+3. ⏳ Memory (cube schema, M formula, simple promotion) — next
 4. ⏳ Dialectic (Player/Coach/Judge over existing engine)
-5. ⏳ Trace (cross-cutting capture, transcript emit)
+5. ⏳ Trace (cross-cutting capture, transcript emit, disk persistence)
 6. ⏳ Self-review (compressed memory dialectic at cadence)
 7. ⏳ Training mode primitives (validation gates, adversarial review)
-8. ⏳ Control surface (dial wiring)
+8. ⏳ Control surface (full dial wiring)
 9. ⏳ Lattice protocol (peer-to-peer over MCP)
 
 ## Quick start
