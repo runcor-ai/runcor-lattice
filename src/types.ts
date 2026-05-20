@@ -80,8 +80,15 @@ export interface IdentityConfig {
   initialClaims?: string[];
   /** SQLite path for the SelfTheory store. Omit for ephemeral / disabled. */
   dbPath?: string;
-  /** Cycles between dialectic-driven reflective updates. 0 disables. Default 20. */
+  /** Cycles between dialectic-driven reflective updates as a periodic cadence.
+   *  0 disables the cadence trigger. Default 20. Reflection ALSO fires on the
+   *  event-driven trigger below regardless of cadence. */
   reflectEvery?: number;
+  /** When true (default), an operator-injected prompt triggers an identity
+   *  reflection on the same cycle, independent of `reflectEvery`. This captures
+   *  how the agent's SelfTheory adapts to each external pivot — long-horizon
+   *  coherence depends on this signal, not on arbitrary cycle-count cadences. */
+  reflectOnOperatorInject?: boolean;
 }
 
 export interface SubstrateConfig {

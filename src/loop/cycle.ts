@@ -98,6 +98,23 @@ export class Cycle implements Agent {
    *  phase flow. stop() calls engine.cancel(currentExecutionId) so an in-flight
    *  LLM call aborts immediately rather than waiting for the phase to finish. */
   private currentExecutionId: string | null = null;
+  /** Set true when the most-recent decide phase consumed an operator-injected
+   *  prompt. Cleared after pulse runs. The pulse phase fires an event-driven
+   *  identity reflection whenever this is true, so the agent's SelfTheory
+   *  captures how it responds to each operator pivot — independent of the
+   *  fixed `reflectEvery` cadence which would never fire on short engagements. */
+  private operatorInjectThisCycle = false;
+  /** Cycles remaining in the operator-injection transition window. Set to
+   *  TRANSITION_WINDOW_CYCLES when an operator inject is consumed; substrate
+   *  non-pass verdicts during the window don't accumulate toward hard-stop.
+   *  The window represents "expected adjustment period after external pivot" —
+   *  the agent legitimately needs cycles to integrate new priorities, and that
+   *  integration is NOT the same as internal drift. */
+  private operatorTransitionCounter = 0;
+  /** Cycles of post-inject grace where substrate non-pass verdicts log but
+   *  don't increment substrateFlagCount. Default 3 = one cycle to absorb the
+   *  inject + two to integrate into goals/responses. */
+  private readonly TRANSITION_WINDOW_CYCLES = 3;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
   private readonly HARD_STOP_FLAG_THRESHOLD = 3;
 
@@ -494,13 +511,30 @@ export class Cycle implements Agent {
         const input = this.lastWrappedPrompt?.system ?? '';
         const output = this.lastAction?.result ?? this.lastDecision?.answer ?? '(no output this cycle)';
         const verdict = await this.substrate.judge(input, output);
+        // Two architectural mechanisms keep flagCount from spuriously tripping
+        // hard-stop on long engagements with legitimate transient turbulence:
+        //   (1) post-inject transition window — non-pass verdicts during the
+        //       N cycles following an operator pivot are logged but don't count
+        //       (the agent is integrating new priorities, not drifting)
+        //   (2) pass-verdict decay — a pass cycle drops the count by 1, so an
+        //       agent that recovers naturally clears its slate
+        const inTransitionWindow = this.operatorTransitionCounter > 0;
         if (verdict.outcome !== 'pass') {
-          this.substrateFlagCount += 1;
+          if (!inTransitionWindow) {
+            this.substrateFlagCount += 1;
+          }
+        } else if (this.substrateFlagCount > 0) {
+          this.substrateFlagCount = Math.max(0, this.substrateFlagCount - 1);
+        }
+        // Tick down the transition counter regardless of verdict.
+        if (this.operatorTransitionCounter > 0) {
+          this.operatorTransitionCounter -= 1;
         }
         this.emit('judge', this.cycleCount, {
           outcome: verdict.outcome,
           flagCount: this.substrateFlagCount,
           failedChecks: verdict.checks.filter((c) => !c.passed).map((c) => c.law),
+          ...(inTransitionWindow ? { transitionWindow: true } : {}),
         });
         break;
       }
@@ -577,9 +611,19 @@ export class Cycle implements Agent {
             this.emit('pulse', this.cycleCount, { event: 'goals-propose-error', error: e instanceof Error ? e.message : String(e) });
           }
         }
-        // Identity reflection cadence — dialectic-driven update to SelfTheory claims.
+        // Identity reflection — triggers are either CADENCE (every N cycles per
+        // identity.reflectEvery, default 20) or EVENT-DRIVEN (any operator-injected
+        // prompt in the just-completed decide phase). The event-driven trigger
+        // captures how the agent's SelfTheory adapts to each operator pivot —
+        // critical for long-horizon coherence checks where the cadence may never
+        // be reached on short engagements OR where the value of reflection is
+        // tied to specific external pressure points, not arbitrary cycle counts.
         const reflectEvery = this.config.identity.reflectEvery ?? 20;
-        if (this.identity.isEnabled() && reflectEvery > 0 && this.cycleCount > 0 && this.cycleCount % reflectEvery === 0) {
+        const cadenceFire = reflectEvery > 0 && this.cycleCount > 0 && this.cycleCount % reflectEvery === 0;
+        const eventFire = this.operatorInjectThisCycle && (this.config.identity.reflectOnOperatorInject ?? true);
+        // Consume the marker so it doesn't carry into the next cycle.
+        this.operatorInjectThisCycle = false;
+        if (this.identity.isEnabled() && (cadenceFire || eventFire)) {
           try {
             const snap = await reflectIdentity(this.identity, this.dialectic, this.cycleCount, this.recentInvocations, this.renderGoalContext());
             this.lastIdentitySnapshot = snap;
@@ -588,6 +632,7 @@ export class Cycle implements Agent {
               version: snap.version,
               claims: snap.claims,
               traitsKeys: Object.keys(snap.traits),
+              trigger: cadenceFire ? 'cadence' : 'operator-inject',
             });
           } catch (e) {
             this.emit('pulse', this.cycleCount, { event: 'identity-reflect-error', error: e instanceof Error ? e.message : String(e) });
@@ -644,6 +689,12 @@ export class Cycle implements Agent {
   private makeDecideProblem(): string {
     const injectedRaw = this.injectedPrompts.splice(0);
     const hasInjected = injectedRaw.length > 0;
+    if (hasInjected) {
+      this.operatorInjectThisCycle = true;
+      // Open a transition window so the substrate's drift detector doesn't
+      // mistake the agent's re-orientation work for internal drift.
+      this.operatorTransitionCounter = this.TRANSITION_WINDOW_CYCLES;
+    }
     const operatorMessage = injectedRaw.join('\n\n---\n\n');
 
     if (hasInjected) {
