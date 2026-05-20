@@ -36,10 +36,33 @@ class LatticeGoals implements GoalsAdapter {
     this.impl = new GoalsImpl({ dbPath });
   }
   init(initial: GoalConfig['initial']): void {
+    // Dedup-on-init: runcor-goals.accept() does NOT check for duplicate
+    // (level + text) entries — it always inserts. Since LatticeConfig.goals.dbPath
+    // is typically shared across engagements (e.g. './data/ceo-goals.db' for the
+    // CEO blueprint), this previously caused each engagement to ADD another copy
+    // of every initial goal. After N runs the stack contained N copies, blowing
+    // up the agent's prompt context with duplicated purpose/objective entries.
+    // Fix: check the existing stack for an entry with the same (level + text);
+    // if present, REINFORCE it (re-asserts priority semantically); if absent,
+    // accept it as a new entry. Either way, exactly one copy per (level + text).
+    const existing = this.impl.stack(0);
+    const seen = new Map<string, number>(); // key = level|text → id
+    for (const g of [...existing.purposes, ...existing.objectives, ...existing.initiatives]) {
+      seen.set(`${g.level}|${g.text}`, g.id);
+    }
     for (const g of initial) {
+      const key = `${g.level}|${g.statement}`;
+      const existingId = seen.get(key);
+      if (existingId !== undefined) {
+        try {
+          this.impl.reinforce(existingId, { currentCycle: 0 });
+        } catch { /* non-fatal — goal exists, that's the important property */ }
+        continue;
+      }
       try {
-        this.impl.accept({ level: g.level as GoalLevel, text: g.statement }, { currentCycle: 0 });
-      } catch { /* ignore duplicates */ }
+        const newId = this.impl.accept({ level: g.level as GoalLevel, text: g.statement }, { currentCycle: 0 });
+        seen.set(key, newId);
+      } catch { /* non-fatal */ }
     }
   }
   stack(currentCycle: number): GoalSnapshot[] {
