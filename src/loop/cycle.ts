@@ -39,6 +39,15 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + '…';
 }
 
+function indentLines(text: string, spaces: number): string {
+  const pad = ' '.repeat(spaces);
+  return text.split('\n').map((line) => pad + line).join('\n');
+}
+
+function escapeOneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export class Cycle implements Agent {
   private cycleCount = 0;
   private status: AgentState['status'] = 'running';
@@ -85,6 +94,10 @@ export class Cycle implements Agent {
   private knowledgeBundles: Array<{ name: string; content: string; description?: string }> = [];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
+  /** When the engine path is in use, the executionId of the currently-running
+   *  phase flow. stop() calls engine.cancel(currentExecutionId) so an in-flight
+   *  LLM call aborts immediately rather than waiting for the phase to finish. */
+  private currentExecutionId: string | null = null;
   /** Outcomes that escalate to a hard stop once flagCount exceeds the threshold. */
   private readonly HARD_STOP_FLAG_THRESHOLD = 3;
 
@@ -232,6 +245,16 @@ export class Cycle implements Agent {
 
   stop(): void {
     this.stopRequested = true;
+    // When the engine path is in use AND a phase execution is in-flight,
+    // cancel it so in-flight LLM calls abort immediately instead of waiting
+    // for the phase to finish. cycle.ts's runPhase treats a cancelled
+    // execution as a graceful resolve (not a throw) so the cycle loop sees
+    // status===stopped at the next phase boundary check.
+    const engine = this.config.engine.instance as { cancel: (id: string, reason?: string) => Promise<void> } | undefined;
+    if (engine && this.currentExecutionId) {
+      const execId = this.currentExecutionId;
+      void engine.cancel(execId, 'agent.stop()').catch(() => { /* best-effort */ });
+    }
   }
 
   state(): AgentState {
@@ -288,7 +311,57 @@ export class Cycle implements Agent {
   // Each phase is a stub today; implementing each is the per-phase work that
   // follows from the spec's build order.
 
+  /** Phase dispatch — when an engine is wired, every phase runs inside an engine
+   *  flow execution so it gets an idempotency key, a cost-ledger slice, an OTel
+   *  span, policy gates, and crash-resume. When no engine is wired, falls back
+   *  to direct in-process dispatch. */
   private async runPhase(phase: Phase): Promise<void> {
+    const engine = this.config.engine.instance as { trigger: (n: string, o: { idempotencyKey: string; input: unknown }) => Promise<{ id: string; state: string; error?: { message?: string } }> } | undefined;
+    if (engine) {
+      // Resolve the per-engine state machinery (active-cycle map + dispatch flow)
+      // lazily so importing the lattice library doesn't require the engine type.
+      const { activeCycles, ensureRunPhaseFlow } = await import('./engine-flows.js');
+      ensureRunPhaseFlow(this.config.engine.instance);
+      activeCycles.set(this.engagementId, this);
+      const execution = await engine.trigger('lattice.runPhase', {
+        idempotencyKey: `${this.engagementId}-cycle-${this.cycleCount}-${phase}`,
+        input: { engagementId: this.engagementId, phase },
+      });
+      // Track the live executionId so stop() can cancel it mid-flight.
+      this.currentExecutionId = execution.id;
+      try {
+        if (execution.state === 'queued' || execution.state === 'running' || execution.state === 'waiting' || execution.state === 'retrying') {
+          // Trigger returns the queued execution; the actual completion is signaled
+          // via the engine's 'execution:complete' event. Wait for it.
+          await new Promise<void>((resolve, reject) => {
+            const e = this.config.engine.instance as { on: (event: string, cb: (e: { executionId: string }) => void) => void; off: (event: string, cb: (e: { executionId: string }) => void) => void; getExecution: (id: string) => Promise<{ state: string; error?: { message?: string } } | null> };
+            const onComplete = (event: { executionId: string }): void => {
+              if (event.executionId !== execution.id) return;
+              e.off('execution:complete', onComplete);
+              void e.getExecution(execution.id).then((finalExec) => {
+                if (!finalExec) return reject(new Error(`engine execution ${execution.id} not found`));
+                if (finalExec.state === 'complete') return resolve();
+                if (finalExec.state === 'failed' && finalExec.error?.message?.includes('cancelled')) return resolve(); // graceful stop
+                reject(new Error(`lattice.runPhase(${phase}) ended in state "${finalExec.state}": ${finalExec.error?.message ?? '<no error>'}`));
+              });
+            };
+            e.on('execution:complete', onComplete);
+          });
+        } else if (execution.state !== 'complete') {
+          throw new Error(`lattice.runPhase(${phase}) returned unexpected state "${execution.state}": ${execution.error?.message ?? '<no error>'}`);
+        }
+      } finally {
+        this.currentExecutionId = null;
+      }
+      return;
+    }
+    await this.runPhaseDirect(phase);
+  }
+
+  /** Phase body — the actual work for each phase. Engine path calls this via a
+   *  registered flow handler; non-engine path calls it directly. Public so the
+   *  engine-flows module can invoke it from within the flow handler context. */
+  async runPhaseDirect(phase: Phase): Promise<void> {
     switch (phase) {
       case 'observe': {
         // Drain peer-protocol inbox (if any) into the cycle's observation.
@@ -561,54 +634,145 @@ export class Cycle implements Agent {
       .join('\n');
   }
 
+  /** Build the decide-phase user message as an R++ v0.5 document.
+   *
+   *  R++ keeps the per-cycle framing consistent across rounds. Earlier prose
+   *  assemblies leaked meta-narration into deliverables (CHECKLIST inside the
+   *  Player's system prompt is the enforcement gate that catches "here is the
+   *  revised version" preambles). See runcor-ai/rpp-parser for the language
+   *  reference. */
   private makeDecideProblem(): string {
-    const goal = this.renderGoalContext();
-    const recallSummary = this.lastRecall.length > 0
-      ? this.lastRecall.map((r) => `- [${r.cube}, M=${r.M.toFixed(2)}] ${r.content.slice(0, 200)}`).join('\n')
-      : '(no relevant memory recalled)';
-    // Drain any operator-injected prompts and surface them prominently.
     const injectedRaw = this.injectedPrompts.splice(0);
     const hasInjected = injectedRaw.length > 0;
-    const injected = injectedRaw.map((p) => `[OPERATOR MESSAGE]\n${p}`).join('\n\n');
+    const operatorMessage = injectedRaw.join('\n\n---\n\n');
+
+    if (hasInjected) {
+      return this.rppOperatorRequest(operatorMessage);
+    }
+    return this.rppAutonomousAction();
+  }
+
+  // ─── R++ document builders ────────────────────────────────────────────────
+
+  private rppOperatorRequest(operatorMessage: string): string {
+    return `# Cycle ${this.cycleCount} — operator request
+
+TARGET {
+  output: the deliverable the operator requested, in the exact format the operator specified
+  profile: lattice-cycle-operator-request
+}
+
+${this.rppDataBlock(operatorMessage)}
+
+BEHAVIOR Respond {
+  CONSTRAINT: the operator_message is a LIVE instruction; standing goals + identity describe long-running background priorities; when they conflict, the operator_message wins for this cycle
+  CONSTRAINT: produce the operator_message's deliverable in the format the operator specified
+  CONSTRAINT: when the operator gives specific parameters (numbers, names, quantities), USE THOSE PARAMETERS — do not ask for "additional data" or "validation" before computing; the knowledge_bundles plus the operator's parameters are sufficient
+  CONSTRAINT: do not pivot the operator's request into a standing-goals review (e.g. operator asks "what is X for these inputs?" → answer X for those inputs; do not redirect to "we should first audit Y")
+  CONSTRAINT: do not include preamble (no "here is", "we need to", "I will now", "after considering the criticisms")
+  CONSTRAINT: do not include meta-headers (no "Analysis", "Response", "Output", "Accepted criticisms", "Revised analysis") wrapping the deliverable
+  CONSTRAINT: do not wrap the deliverable in a JSON envelope (no \`{"output": "..."}\`); the deliverable IS the output text directly
+  CONSTRAINT: when the answer comes from a knowledge_bundle, quote the supporting line directly inside the deliverable — do not narrate the consultation process
+  CONSTRAINT: optionally end with one "NEXT: <one follow-up action>" line after the deliverable
+  CONSTRAINT: when a capability call is needed, end with one "INVOKE <capability>" line per the capability catalog
+}
+
+CHECKLIST {
+  [ ] the deliverable answers the operator_message's actual question using the parameters the operator gave
+  [ ] no pivot to standing-goals review when the operator asked a specific question
+  [ ] output begins with the deliverable itself, not with a header or preamble phrase
+  [ ] output is plain text in the operator's specified format, NOT wrapped in a JSON envelope
+  [ ] output format matches the operator_message's specified format (post→post, number→number, HTML→HTML, recommendation→recommendation)
+  [ ] knowledge_bundle citations appear as direct quotes inside the deliverable, not as consultation narration
+  [ ] at most one NEXT: line, only if a meaningful follow-up exists
+  [ ] at most one INVOKE line, well-formed per the capability catalog if present
+}`;
+  }
+
+  private rppAutonomousAction(): string {
+    return `# Cycle ${this.cycleCount} — autonomous step
+
+TARGET {
+  output: a single concrete next action with a one-paragraph rationale
+  profile: lattice-cycle-autonomous
+}
+
+${this.rppDataBlock(null)}
+
+BEHAVIOR Decide {
+  CONSTRAINT: choose ONE concrete next action grounded in identity, goals, or recalled_memory
+  CONSTRAINT: state the action first, then the rationale in at most one paragraph
+  CONSTRAINT: end with one "INVOKE <capability>" line per the capability catalog when an action is needed; omit INVOKE when no capability call is appropriate
+}
+
+CHECKLIST {
+  [ ] output identifies one concrete next action, not a survey of options
+  [ ] rationale references identity, goals, or recalled_memory by name
+  [ ] INVOKE line, when present, matches a capability from the catalog
+}`;
+  }
+
+  /** Assemble the shared DATA block (identity, knowledge bundles, goals, recall,
+   *  capability catalog, and — when an operator message is present — the
+   *  operator_message field). All long values are nested-indented per R++. */
+  private rppDataBlock(operatorMessage: string | null): string {
     const idSnap = this.lastIdentitySnapshot;
-    const idBlock = idSnap && idSnap.claims.length > 0
-      ? `Identity (v${idSnap.version}):\n${idSnap.claims.map((c) => '  - ' + c).join('\n')}`
-      : `Identity: ${this.config.identity.description}`;
-    // Knowledge bundles — authoritative reference material the operator attached.
-    // Place ABOVE goals/recall so the agent sees them as ground truth.
-    const knowledgeBlock = this.knowledgeBundles.length > 0
-      ? `Knowledge bundles (authoritative — consult before answering):\n${this.knowledgeBundles.map((b) => `═══ ${b.name}${b.description ? ` (${b.description})` : ''} ═══\n${b.content}`).join('\n\n')}`
+    const identityFields = idSnap && idSnap.claims.length > 0
+      ? `  identity_version: v${idSnap.version}
+  identity_claims:
+${idSnap.claims.map((c) => '    - ' + c).join('\n')}`
+      : `  identity_description: ${escapeOneLine(this.config.identity.description)}`;
+
+    const bundlesBlock = this.knowledgeBundles.length > 0
+      ? `  knowledge_bundles (authoritative — consult before answering):
+${this.knowledgeBundles
+        .map((b) => `    ═══ ${b.name}${b.description ? ` (${b.description})` : ''} ═══
+${indentLines(b.content, 4)}`)
+        .join('\n\n')}`
+      : `  knowledge_bundles: (none attached)`;
+
+    const goalText = this.renderGoalContext();
+    const goalsBlock = goalText
+      ? `  goals:
+${indentLines(goalText, 4)}`
+      : `  goals: (none configured)`;
+
+    const recallBlock = this.lastRecall.length > 0
+      ? `  recalled_memory:
+${this.lastRecall.map((r) => `    - [${r.cube}, M=${r.M.toFixed(2)}] ${r.content.slice(0, 200)}`).join('\n')}`
+      : `  recalled_memory: (no relevant memory recalled)`;
+
+    const catalog = renderCapabilityCatalog(this.capabilities);
+    const capabilitiesBlock = catalog
+      ? `  capabilities:
+${indentLines(catalog, 4)}`
+      : `  capabilities: (none registered)`;
+
+    // When the operator has injected a message, it leads the DATA block. The model
+    // sees the live instruction FIRST, before standing identity / goals / recall.
+    // Earlier ordering buried operator_message at the bottom, after goals — which
+    // let the agent frame the operator's request through its standing goals lens
+    // (e.g. CFO asked a pricing question, pivoted to "let me review our burn rate
+    // first" because burn-rate was a standing goal it saw before the operator
+    // message).
+    const operatorBlock = operatorMessage !== null
+      ? `  operator_message (LIVE instruction — answer THIS, in the format requested, using the parameters the operator gave):
+${indentLines(operatorMessage, 4)}
+
+`
       : '';
-    // The closing instruction depends on whether the operator injected a question.
-    // When yes: answer the operator FIRST, in plain language, citing the knowledge
-    // bundle when the answer comes from it. This prevents the model from getting
-    // tangled in meta-deliberation about strategy when the operator just wants a
-    // direct answer. Without this, the dialectic's Coach round can loop on tangents
-    // ("authority grants", "stakeholder communication") instead of just answering.
-    const closingInstruction = hasInjected
-      ? `Cycle ${this.cycleCount}: The operator is asking you for a deliverable, not for your analysis of how to deliver it.
 
-OUTPUT REQUIREMENTS:
-- Your response IS the deliverable. Do not include meta-commentary like "here is the revised version", "we need to produce", "I will now write", "after considering the criticisms", or any preamble.
-- If the operator asked for a LinkedIn post, output ONLY the post body, ready to publish.
-- If they asked for a number, output one sentence with the number stated clearly.
-- If they asked for a recommendation, output the recommendation directly.
-- Quote the relevant knowledge bundle line ONLY when it's the answer or directly supports it — do not narrate your bundle-consultation process.
-- A separate "NEXT:" line at the end may add one follow-up action if appropriate.
-- An INVOKE line at the very end if a capability call is needed.
+    return `DATA {
+${operatorBlock}${identityFields}
 
-Now produce the deliverable for: ${'\n'}${injected ? '' : '(no operator message — describe the next concrete action instead)'}`
-      : `Cycle ${this.cycleCount}: What is the next concrete action this agent should take, and why? End your answer with one INVOKE line per the capability catalog (or omit if no action is needed).`;
-    const parts = [
-      idBlock,
-      knowledgeBlock,
-      goal ? `Goals:\n${goal}` : 'Goals: (none configured)',
-      `Recalled memory:\n${recallSummary}`,
-      renderCapabilityCatalog(this.capabilities),
-      injected,
-      closingInstruction,
-    ];
-    return parts.filter(Boolean).join('\n\n');
+${bundlesBlock}
+
+${goalsBlock}
+
+${recallBlock}
+
+${capabilitiesBlock}
+}`;
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────
@@ -648,6 +812,14 @@ Now produce the deliverable for: ${'\n'}${injected ? '' : '(no operator message 
     this.trace.end(result);
     // Best-effort protocol shutdown — don't let MCP server errors fail the engagement result.
     void this.protocol.shutdown().catch(() => {});
+    // Remove this cycle from the engine-flows dispatch table so the activeCycles
+    // map doesn't grow unbounded as engagements complete. Dynamic import keeps
+    // this side-effecting only when an engine path was actually used.
+    if (this.config.engine.instance) {
+      void import('./engine-flows.js').then(({ activeCycles }) => {
+        activeCycles.delete(this.engagementId);
+      }).catch(() => {});
+    }
     return result;
   }
 }

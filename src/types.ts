@@ -133,8 +133,15 @@ export interface DriveConfig {
 export interface EngineRef {
   /** Where the engine receives LLM calls. Defaults to runcor's built-in modelRouter. */
   type: 'runcor-engine';
-  /** Provider API keys (passed through to runcor-dialectic adapters). */
+  /** Provider API keys (passed through to runcor-dialectic adapters when no `instance` is set). */
   apiKeys: { openrouter?: string; anthropic?: string; openai?: string };
+  /** Optional live runcor engine instance. When set, every dialectic model call routes
+   *  through this engine — cost ledger, provider fallback, telemetry, and policy gates
+   *  apply automatically. When omitted, the lattice falls back to the standalone
+   *  runcor-dialectic provider adapters (direct OpenRouter / Anthropic fetch).
+   *  Typed as `unknown` here so the lattice's type surface doesn't depend on `runcor`
+   *  symbols at the type level — the dialectic adapter casts when registering. */
+  instance?: unknown;
 }
 
 // ─── Control surface (the runtime dials) ────────────────────────────────────

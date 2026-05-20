@@ -11,8 +11,24 @@
 // When no OpenRouter key is configured, the adapter goes into disabled-mode and returns
 // a no-op DecisionResult so the cycle stays runnable in tests + smoke runs.
 
-import { dialectic, canonicalRoleSet, type DialecticResult } from 'runcor-dialectic';
+import { dialectic, canonicalRoleSet, registerProvider, type DialecticResult } from 'runcor-dialectic';
+import type { Runcor } from 'runcor';
 import type { EngineRef } from '../types.js';
+import { EngineProviderAdapter } from './engine-adapter.js';
+
+// Track which engines we've already wired into the dialectic provider registry so
+// the same registration doesn't repeat per cycle.
+const enginesWired = new WeakSet<object>();
+
+function wireEngineIntoDialectic(engine: Runcor): void {
+  if (enginesWired.has(engine as object)) return;
+  // Register one adapter per provider prefix the dialectic role-set might use.
+  // The 'openrouter' name is what canonicalRoleSet's model strings parse to.
+  registerProvider(new EngineProviderAdapter(engine, { name: 'openrouter', pinProvider: 'openrouter' }));
+  // Anthropic models parse to 'anthropic' provider prefix. Same engine, different pin.
+  registerProvider(new EngineProviderAdapter(engine, { name: 'anthropic', pinProvider: 'anthropic' }));
+  enginesWired.add(engine as object);
+}
 
 /** Per-role model overrides — when a role's model differs from the canonical default,
  *  build a RoleConfig override using the canonical prompts but with the substituted model. */
@@ -155,7 +171,22 @@ class DisabledDialectic implements Dialectic {
 }
 
 export function createDialectic(engine: EngineRef, depth: DialecticDepth, models?: DialecticModels): Dialectic {
+  // Provider-key short-circuit. Tests delete env vars at lattice-instantiation
+  // time to disable model calls; production runs always have keys set. Apply
+  // this BEFORE the engine.instance branch so tests stay fast even when the
+  // bridge's engine is already wired.
   const hasProviderKey = !!(engine.apiKeys.openrouter || engine.apiKeys.anthropic || process.env['OPENROUTER_API_KEY'] || process.env['ANTHROPIC_API_KEY']);
   if (!hasProviderKey) return new DisabledDialectic();
+  // Engine-integrated path: when an engine instance is supplied, route every
+  // dialectic model call through it. This gives us provider fallback, cost
+  // ledger entries, telemetry spans, policy gates, and quality evaluation —
+  // the single integration point the engine is for.
+  if (engine.instance) {
+    wireEngineIntoDialectic(engine.instance as Runcor);
+    return new LatticeDialectic(depth, models);
+  }
+  // Fallback: no engine — use the dialectic library's own provider adapters
+  // (direct OpenRouter / Anthropic fetch). Standalone library use only;
+  // production / Bridge always passes an engine instance.
   return new LatticeDialectic(depth, models);
 }
