@@ -456,9 +456,13 @@ export class Cycle implements Agent {
             costByRole: this.lastDecision.costByRole,
             answerLength: this.lastDecision.answer.length,
             // 1200 was too short — CFO calculations with show-your-work would truncate
-            // before the final total. 3000 is enough for typical full responses while
-            // keeping JSONL line size bounded.
-            answerPreview: truncate(this.lastDecision.answer, 3000),
+            // before the final total. 3000 was the next attempt — still too short for
+            // HTML deliverables (web-design lattice produces 7K+ char landing pages).
+            // 32000 covers most full-artifact outputs (long-form HTML, structured docs,
+            // multi-section reports) without bloating the JSONL more than necessary.
+            // Downstream consumers that need bounded preview can still slice() the
+            // answerPreview field locally.
+            answerPreview: truncate(this.lastDecision.answer, 32000),
           });
         } catch (e) {
           this.lastDecision = null;
