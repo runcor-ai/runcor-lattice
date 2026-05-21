@@ -43,6 +43,12 @@ export interface DecisionInput {
   maxRounds?: number;
   /** Optional hard budget cap in USD for this single decide call. */
   budgetCapUsd?: number;
+  /** Optional deterministic validators run against each Player draft. Each returns
+   *  a list of violation messages (empty array = clean). Violations are fed back
+   *  to the Coach so the Player is forced to revise until clean. Use for hard
+   *  char/phrase prohibitions the LLM keeps slipping past (e.g. brand-voice
+   *  "no `!`" rules where the model defaults to LinkedIn-marketing voice). */
+  validators?: Array<(draft: string) => string[]>;
 }
 
 export interface Decision {
@@ -91,6 +97,7 @@ class LatticeDialectic implements Dialectic {
       maxRounds,
       ...(typeof input.budgetCapUsd === 'number' ? { budget_cap_usd: input.budgetCapUsd } : {}),
       ...(this.hasOverrides() ? { roles: this.buildRoleOverrides() } : {}),
+      ...(input.validators && input.validators.length > 0 ? { validators: input.validators } : {}),
     });
     const costByRole: Record<string, number> = {};
     for (const r of result.transcript ?? []) {

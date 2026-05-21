@@ -445,7 +445,16 @@ export class Cycle implements Agent {
         const problem = this.makeDecideProblem();
         this.dialectic.setDepth(this.controls.dialecticDepth);
         try {
-          this.lastDecision = await this.dialectic.decide({ problem });
+          // Build a deterministic validator from any "PROHIBITED" rules in
+          // the attached knowledge bundles. The dialectic enforces violations
+          // by feeding them to the Coach so the Player is forced to revise
+          // until clean. Catches char-level rules (no `!`, no `—`) that LLMs
+          // routinely slip past prose-level CONSTRAINTs.
+          const validators = this.buildBundleValidators();
+          this.lastDecision = await this.dialectic.decide({
+            problem,
+            ...(validators.length > 0 ? { validators } : {}),
+          });
           this.totalCostUsd += this.lastDecision.costUsd;
           this.emit('decide', this.cycleCount, {
             enabled: this.lastDecision.enabled,
@@ -668,6 +677,60 @@ export class Cycle implements Agent {
 
   private makeCycleInstruction(): string {
     return `Cycle ${this.cycleCount}: assess current state and choose next action.`;
+  }
+
+  /** Build deterministic post-draft validators from attached knowledge bundles.
+   *  Scans each bundle for "PROHIBITED" sections and extracts banned substrings.
+   *  Returns a list of validator functions; each takes a Player draft and
+   *  returns specific violation messages. Empty result when no bundle has
+   *  prohibition rules — no overhead added to runs that don't need this. */
+  private buildBundleValidators(): Array<(draft: string) => string[]> {
+    const banned = new Set<string>();
+    for (const b of this.knowledgeBundles) {
+      // Find the "PROHIBITED" / "PROHIBITED:" / "BANNED" section header and
+      // collect lines below it up to the next blank-line-followed-by-heading.
+      const lines = b.content.split('\n');
+      let inProhib = false;
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (/^(PROHIBITED|BANNED)\b/i.test(line)) { inProhib = true; continue; }
+        if (inProhib && /^(PREFERRED|REQUIRED|ALLOWED|---)\b/i.test(line)) { inProhib = false; continue; }
+        if (!inProhib) continue;
+        // Bullet items: "- foo" or "* foo" or numbered. Extract parenthesized
+        // single chars like "(! anywhere ...)" and "(—)" — those are explicit
+        // char rules. Also extract quoted phrases throughout the line.
+        if (/^[-*•]\s/.test(line) || /^\d+[.)]\s/.test(line) || /^Phrases?:/i.test(line)) {
+          // Parenthesized single chars (1-2 chars not common in english prose)
+          const parens = line.match(/\(([^)]+)\)/g) ?? [];
+          for (const p of parens) {
+            const inside = p.slice(1, -1).split(/\s/)[0];
+            if (inside && inside.length <= 3 && !/[a-zA-Z0-9]/.test(inside)) banned.add(inside);
+          }
+          // Explicit single-char mentions like "Exclamation marks (!)" or
+          // "Em-dashes (—)" — extract the literal char
+          const charMatch = line.match(/[—!]/g);
+          if (charMatch) for (const c of charMatch) banned.add(c);
+          // Quoted phrases: "game-changer", 'synergy', etc.
+          const quoted = line.match(/["']([^"']+)["']/g) ?? [];
+          for (const q of quoted) banned.add(q.slice(1, -1).toLowerCase());
+        }
+      }
+    }
+    if (banned.size === 0) return [];
+    const bannedList = [...banned];
+    return [(draft: string): string[] => {
+      const violations: string[] = [];
+      const lower = draft.toLowerCase();
+      for (const b of bannedList) {
+        // Char-level: exact substring match (case-insensitive for phrases)
+        const target = b.length === 1 ? b : b.toLowerCase();
+        const haystack = b.length === 1 ? draft : lower;
+        if (haystack.includes(target)) {
+          violations.push(`Output contains prohibited substring "${b}" — remove all instances. If "${b}" is "!" replace with "."; if "—" replace with comma or parentheses; if a banned phrase, rewrite to avoid it.`);
+        }
+      }
+      return violations;
+    }];
   }
 
   private renderGoalContext(): string {
