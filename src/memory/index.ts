@@ -45,8 +45,12 @@ export interface NodeSummary {
 }
 
 export interface Memory {
-  /** Top-k semantic recall against the current cycle's query. */
-  recall(query: string, k?: number): Promise<RecalledMemory[]>;
+  /** Top-k semantic recall against the current cycle's query.
+   *  `opts.excludeEngagementId` filters out memory entries tagged with the
+   *  matching `engagement:<id>` tag — used to exclude this-engagement's own
+   *  in-progress working memory from recall, so the agent gets CROSS-engagement
+   *  knowledge only (within-engagement context already lives in the prompt). */
+  recall(query: string, k?: number, opts?: { excludeEngagementId?: string }): Promise<RecalledMemory[]>;
   /** Persist an event with reinforcement strength `R` (default 0.5). */
   record(content: string, opts?: RecordOptions): Promise<RecordResult>;
   /** Reinforce an existing node's `f` by `amount` (default 1). Returns true if found. */
@@ -88,9 +92,28 @@ class LatticeMemory implements Memory {
     });
   }
 
-  async recall(query: string, k = 5): Promise<RecalledMemory[]> {
+  async recall(query: string, k = 5, opts?: { excludeEngagementId?: string }): Promise<RecalledMemory[]> {
     if (!query) return [];
-    const results: QueryResult[] = await this.system.query(query, k);
+    const exclude = opts?.excludeEngagementId;
+    // Two-layer filter for the lattice's recall:
+    //   1. Cross-engagement only — exclude entries tagged with the current
+    //      engagement ID. Within-engagement working memory lives in the
+    //      prompt's conversation context, not in recall.
+    //   2. Long-cube only — recall surfaces ONLY entries that R9 consolidation
+    //      has promoted from short to long. Short-cube is per-engagement scratch
+    //      that hasn't earned cross-engagement status. Promotion = quality gate,
+    //      driven by R × ln(f+1) × decay > promoteThreshold.
+    // Combined: recall returns vetted cross-engagement knowledge. Cold-start
+    // (empty long cube) returns nothing — that's the correct behavior; the agent
+    // hasn't learned anything generalizable yet.
+    const queryOpts = {
+      filter: (node: { tags: string[]; cube: string }): boolean => {
+        if (node.cube !== 'long') return false;
+        if (exclude && node.tags.includes(`engagement:${exclude}`)) return false;
+        return true;
+      },
+    };
+    const results: QueryResult[] = await this.system.query(query, k, queryOpts);
     return results.map((r) => ({
       id: r.node.id,
       content: r.node.content,
@@ -182,7 +205,7 @@ function toSummary(n: { id: string; content: string; M: number; R: number; f: nu
 }
 
 class DisabledMemory implements Memory {
-  async recall(_query: string, _k?: number): Promise<RecalledMemory[]> { return []; }
+  async recall(_query: string, _k?: number, _opts?: { excludeEngagementId?: string }): Promise<RecalledMemory[]> { return []; }
   async record(_content: string, _opts?: RecordOptions): Promise<RecordResult> { return { action: 'disabled', nodeId: null }; }
   reinforce(_id: string, _amount?: number): boolean { return false; }
   async cycle(_currentCycle: number): Promise<{ promoted: number; forgotten: number }> { return { promoted: 0, forgotten: 0 }; }

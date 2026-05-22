@@ -94,6 +94,8 @@ export class Cycle implements Agent {
   private knowledgeBundles: Array<{ name: string; content: string; description?: string }> = [];
   /** Cumulative substrate-flag count (judge non-pass outcomes). Drives substrate-hard-stop. */
   private substrateFlagCount = 0;
+  /** Most recent judge verdict outcome — used by write phase to score memory R. */
+  private lastJudgeOutcome: 'pass' | 'escalate' | 'block' | null = null;
   /** When the engine path is in use, the executionId of the currently-running
    *  phase flow. stop() calls engine.cancel(currentExecutionId) so an in-flight
    *  LLM call aborts immediately rather than waiting for the phase to finish. */
@@ -416,7 +418,13 @@ export class Cycle implements Agent {
         const query = this.renderGoalContext() || this.config.identity.description;
         const breadth = this.effective?.effectiveRecallBreadth ?? this.controls.memoryRecallBreadth;
         try {
-          this.lastRecall = await this.memory.recall(query, breadth);
+          // Exclude this engagement's own in-progress entries from recall.
+          // Within an engagement, the agent's own conversation context already
+          // contains its cycle history — surfacing it back as if it were
+          // external knowledge pollutes focus with the agent's own scratch-pad.
+          // Recall surfaces CROSS-engagement memory only (prior runs' entries
+          // that survived their decay + promotion or that match this query).
+          this.lastRecall = await this.memory.recall(query, breadth, { excludeEngagementId: this.engagementId });
           this.emit('recall', this.cycleCount, {
             queryLength: query.length,
             recalled: this.lastRecall.length,
@@ -524,6 +532,7 @@ export class Cycle implements Agent {
         const input = this.lastWrappedPrompt?.system ?? '';
         const output = this.lastAction?.result ?? this.lastDecision?.answer ?? '(no output this cycle)';
         const verdict = await this.substrate.judge(input, output);
+        this.lastJudgeOutcome = verdict.outcome as 'pass' | 'escalate' | 'block';
         // Two architectural mechanisms keep flagCount from spuriously tripping
         // hard-stop on long engagements with legitimate transient turbulence:
         //   (1) post-inject transition window — non-pass verdicts during the
@@ -558,7 +567,22 @@ export class Cycle implements Agent {
           ? `Cycle ${this.cycleCount}: invoked ${this.lastAction.name}(${JSON.stringify(this.lastAction.args).slice(0, 200)}). Result: ${this.lastAction.result.slice(0, 500)}`
           : `Cycle ${this.cycleCount}: no action invoked. Decision: ${this.lastDecision?.answer.slice(0, 300) ?? '(none)'}`;
         try {
-          const recorded = await this.memory.record(content, { tags: ['episodic', `cycle:${this.cycleCount}`], R: 0.5 });
+          // Tag every write with the engagement ID so subsequent recall calls
+          // within THIS engagement can exclude these entries (see recall site above).
+          // The engagement tag also lets downstream tooling group memory entries
+          // by engagement for inspection / replay / cross-engagement queries.
+          //
+          // Quality-gated R (relevance score, drives R9 consolidation priority):
+          // High R = "this cycle output is worth remembering". Low R = "this was
+          // exploratory / drifty — don't promote it to long cube". The R9 cycle
+          // uses R × ln(f+1) × decay to decide what survives + what gets promoted
+          // from short to long. By varying R per cycle, we ensure ONLY high-quality
+          // cycle outputs become cross-engagement recallable knowledge.
+          const r = this.computeMemoryR();
+          const recorded = await this.memory.record(content, {
+            tags: ['episodic', `cycle:${this.cycleCount}`, `engagement:${this.engagementId}`],
+            R: r,
+          });
           const consolidated = await this.memory.cycle(this.cycleCount);
           this.emit('write', this.cycleCount, {
             recordAction: recorded.action,
@@ -677,6 +701,24 @@ export class Cycle implements Agent {
 
   private makeCycleInstruction(): string {
     return `Cycle ${this.cycleCount}: assess current state and choose next action.`;
+  }
+
+  /** Compute the memory-write relevance score R from quality signals.
+   *  Range 0.1–0.9. R9 consolidation uses R × ln(f+1) × decay to decide
+   *  what survives short-cube + promotes to long-cube. Higher R = more
+   *  likely to become cross-engagement recallable knowledge. */
+  private computeMemoryR(): number {
+    const judge = this.lastJudgeOutcome ?? 'pass';
+    const dec = this.lastDecision;
+    if (!dec) return 0.1; // no decision = nothing to remember
+    if (judge === 'block') return 0.2; // substrate flagged a real failure
+    if (judge === 'escalate') return 0.4; // soft flag, worth noting but not promoting
+    // judge === 'pass' — vary by dialectic convergence quality
+    if (dec.converged && dec.convergenceReason === 'coach-converged-validated') return 0.9;
+    if (dec.converged && dec.convergenceReason === 'judge-novelty') return 0.75;
+    if (dec.converged) return 0.7; // other converged states (single-pass-synthesized etc.)
+    if (dec.convergenceReason === 'max-rounds-without-incorporation') return 0.4; // tried hard, failed
+    return 0.6; // pass but didn't converge — moderate confidence
   }
 
   /** Build deterministic post-draft validators from attached knowledge bundles.
