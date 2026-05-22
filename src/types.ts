@@ -23,6 +23,15 @@ export interface LatticeConfig {
   trainingMode?: TrainingModeConfig;
   reviewCycle?: { everyNCycles: number };
   protocol?: LatticeProtocolConfig;
+  /** Display name of the blueprint that produced this lattice (e.g. "CEO",
+   *  "Content Writer"). Used as provenance metadata when minting skills at
+   *  engagement close. Set by the Bridge; standalone lattice creators may
+   *  leave it undefined. */
+  blueprintName?: string;
+  /** Optional org-scoped skill library. When set, the lattice mints skills at
+   *  engagement close (goal-complete only) and writes them here. Bridge
+   *  injects a singleton across all lattices in the same org. */
+  skillsLibrary?: unknown;
 }
 
 export interface KnowledgeBundleInput {

@@ -39,6 +39,7 @@
     "runcor-memory": "file:../runcor-memory",
     "runcor-meta": "file:../runcor-meta",
     "runcor-skills": "file:../runcor-skills",
+    "runcor-skills-library": "file:../runcor-skills-library",
     "runcor-substrate": "file:../runcor-substrate",
     "runcor-temporal": "file:../runcor-temporal",
     "runcor-watchdog": "file:../runcor-watchdog"

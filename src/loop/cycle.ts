@@ -980,6 +980,52 @@ ${capabilitiesBlock}
         activeCycles.delete(this.engagementId);
       }).catch(() => {});
     }
+    // Skill minting on engagement close. Fire-and-forget; the EngagementResult
+    // doesn't wait on skill synthesis. Gated by:
+    //   - exit reason: only goal-complete (drift/budget-exhaust/manual-stop
+    //     don't get skills because the agent didn't actually finish what it
+    //     was doing)
+    //   - skillsLibrary present in config: bridge injects the org-scoped
+    //     library when wired; absent for standalone lattice creators
+    if (reason === 'goal-complete' && this.config.skillsLibrary) {
+      void this.mintSkillsOnClose().catch(() => { /* non-fatal */ });
+    }
     return result;
+  }
+
+  /** Mint task-specific + generalized R++ skills from this engagement's trace,
+   *  and write them to the SkillsLibrary. Gated by config.skillsLibrary
+   *  presence and goal-complete exit reason (caller's responsibility). */
+  private async mintSkillsOnClose(): Promise<void> {
+    const lib = this.config.skillsLibrary as import('runcor-skills-library').SkillsLibrary | undefined;
+    if (!lib) return;
+    const blueprintName = this.config.blueprintName ?? this.config.identity.description.split('.')[0]?.trim() ?? 'unknown';
+
+    // Pull operator message + final answer from the most recent decide phase.
+    const operatorMessage = this.lastWrappedPrompt?.system ?? null;
+    const finalAnswer = this.lastDecision?.answer ?? '';
+
+    // Aggregate judge outcomes across the engagement from the in-memory counter.
+    // (For a richer per-invocation join, walk the trace; the v1 minting tolerates
+    //  the coarser signal.)
+    const judgeOutcomes: Array<'pass' | 'escalate' | 'block'> = this.lastJudgeOutcome ? [this.lastJudgeOutcome] : ['pass'];
+
+    const { mintSkillsForEngagement, buildPatternFromInvocations } = await import('../skills/index.js');
+    const pattern = buildPatternFromInvocations({
+      blueprintName,
+      operatorMessage,
+      finalAnswer,
+      invocations: [...this.recentInvocations],
+      judgeOutcomes,
+    });
+
+    await mintSkillsForEngagement({
+      engagementId: this.engagementId,
+      blueprintName,
+      autonomy: this.controls.autonomy,
+      dialectic: this.dialectic,
+      library: lib,
+      pattern,
+    });
   }
 }
